@@ -1,0 +1,26 @@
+{
+    "name": "zana/security",
+    "description": "Authentication and authorization support for Zana applications",
+    "type": "library",
+    "keywords": ["zana", "security", "auth", "authentication", "authorization"],
+    "license": "MIT",
+    "require": {
+        "php": "^8.1"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "Zana\\Security\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Zana\\Security\\Tests\\": "tests/"
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
+
