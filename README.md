@@ -86,6 +86,24 @@ permission a 403.
 
 `authorize()` throws a 403 instead of returning false.
 
+## New in 2.1: CSRF protection
+
+Stateless, without sessions or cookies. Add `CsrfMiddleware` to the routes
+that receive forms, and print the token in each form:
+
+```php
+<input type="hidden" name="_token" value="<?= $csrf->issue('contact') ?>">
+<input type="hidden" name="_form" value="contact">
+```
+
+With `mj-zana/view`, `csrf_field('contact')` prints both fields.
+- **Checks:** cross-site `Sec-Fetch-Site` and `Origin` headers are refused,
+  and the token must match its form and not be expired.
+- **Exemptions:** requests with an `Authorization` header, and handlers
+  marked `#[WithoutCsrf]`, are not checked.
+- **Configuration:** `security.csrf.lifetime` (default 7200 s), and
+  `security.csrf.single_use`, which needs a PSR-16 cache.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
