@@ -97,6 +97,7 @@ that receive forms, and print the token in each form:
 ```
 
 With `mj-zana/view`, `csrf_field('contact')` prints both fields.
+
 - **Checks:** cross-site `Sec-Fetch-Site` and `Origin` headers are refused,
   and the token must match its form and not be expired.
 - **Exemptions:** requests with an `Authorization` header, and handlers
