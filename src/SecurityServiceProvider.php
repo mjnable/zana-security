@@ -4,17 +4,20 @@ declare(strict_types=1);
 
 namespace Zana\Security;
 
+use Psr\SimpleCache\CacheInterface;
 use Zana\Configuration\ConfigurationInterface;
 use Zana\Container\Contracts\ServiceCollectionInterface;
 use Zana\Container\Contracts\ServiceResolverInterface;
 use Zana\Core\ServiceProvider;
 use Zana\Security\Middleware\AuthenticationMiddleware;
 use Zana\Security\Middleware\AuthorizationMiddleware;
+use Zana\Security\Middleware\CsrfMiddleware;
 
 /**
  * Registers the hasher, the token signer (secret from security.secret), the
  * authorizer (security.roles, security.hierarchy, security.policies), the
- * scoped SecurityContext and both middleware.
+ * scoped SecurityContext, CSRF tokens (security.csrf.lifetime,
+ * security.csrf.single_use, which needs a PSR-16 cache) and the middleware.
  *
  * Policies are resolved from the container when registered there, otherwise
  * created without arguments. AuthenticationMiddleware needs the application's
@@ -65,7 +68,19 @@ final class SecurityServiceProvider extends ServiceProvider
             ->scoped(AuthorizationMiddleware::class, static fn (ServiceResolverInterface $r): AuthorizationMiddleware => new AuthorizationMiddleware(
                 $r->get(SecurityContext::class),
                 $r->get(Authorizer::class),
-            ));
+            ))
+            ->singleton(CsrfTokens::class, static function (ServiceResolverInterface $r): CsrfTokens {
+                $config = $r->get(ConfigurationInterface::class);
+                $cache = $r->has(CacheInterface::class) ? $r->get(CacheInterface::class) : null;
+
+                return new CsrfTokens(
+                    $r->get(TokenSigner::class),
+                    $cache instanceof CacheInterface ? $cache : null,
+                    $config->int('security.csrf.lifetime', 7200),
+                    $config->bool('security.csrf.single_use', false),
+                );
+            })
+            ->scoped(CsrfMiddleware::class);
     }
 
     public function origin(): string
