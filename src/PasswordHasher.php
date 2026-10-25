@@ -8,6 +8,9 @@ namespace Zana\Security;
  * Hashes passwords with Argon2id when PHP supports it, otherwise bcrypt.
  * Passwords longer than 4,096 bytes are rejected, to keep hashing cheap to
  * refuse.
+ *
+ * bcrypt reads only the first 72 bytes and stops at a NUL byte, so such
+ * passwords are pre-hashed with SHA-384 for bcrypt; every byte counts.
  */
 final class PasswordHasher
 {
@@ -28,13 +31,20 @@ final class PasswordHasher
     public function hash(string $plain): string
     {
         $this->guard($plain);
+        $bcrypt = $this->algorithm === PASSWORD_BCRYPT;
 
-        return password_hash($plain, $this->algorithm, $this->options);
+        return password_hash($bcrypt ? self::forBcrypt($plain) : $plain, $this->algorithm, $this->options);
     }
 
     public function verify(string $plain, string $hash): bool
     {
-        return strlen($plain) <= self::MAX_LENGTH && password_verify($plain, $hash);
+        if (strlen($plain) > self::MAX_LENGTH) {
+            return false;
+        }
+
+        $bcrypt = password_get_info($hash)['algo'] === PASSWORD_BCRYPT;
+
+        return password_verify($bcrypt ? self::forBcrypt($plain) : $plain, $hash);
     }
 
     /**
@@ -49,6 +59,16 @@ final class PasswordHasher
     public function algorithm(): string
     {
         return $this->algorithm;
+    }
+
+    private static function forBcrypt(string $plain): string
+    {
+        if (strlen($plain) <= 72 && !str_contains($plain, "\0")) {
+            return $plain;
+        }
+
+        // 64 base64 characters: within bcrypt's 72 bytes, and never a NUL
+        return base64_encode(hash('sha384', $plain, true));
     }
 
     private function guard(string $plain): void

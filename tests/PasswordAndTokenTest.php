@@ -33,6 +33,25 @@ final class PasswordAndTokenTest extends TestCase
         $this->assertTrue($bcrypt->verify('correct horse', $bcrypt->hash('correct horse')));
     }
 
+    public function testBcryptChecksEveryByte(): void
+    {
+        $bcrypt = new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT);
+        $prefix = str_repeat('a', 72);
+        $hash = $bcrypt->hash($prefix . 'SECRET-ONE');
+
+        $this->assertTrue($bcrypt->verify($prefix . 'SECRET-ONE', $hash));
+        $this->assertFalse($bcrypt->verify($prefix . 'SECRET-TWO', $hash), 'past 72 bytes');
+        $this->assertFalse($bcrypt->verify($prefix, $hash));
+
+        $nul = $bcrypt->hash("abc\0def");
+        $this->assertTrue($bcrypt->verify("abc\0def", $nul));
+        $this->assertFalse($bcrypt->verify("abc\0xyz", $nul), 'past a NUL byte');
+
+        $argon = new PasswordHasher(['memory_cost' => 8192, 'time_cost' => 1]);
+        $this->assertTrue($argon->verify($prefix . 'SECRET-ONE', $hash), 'bcrypt hashes verify before a rehash');
+        $this->assertFalse($argon->verify($prefix . 'SECRET-TWO', $hash));
+    }
+
     public function testLongPasswordsAreRejected(): void
     {
         $hasher = new PasswordHasher(['memory_cost' => 8192, 'time_cost' => 1]);
