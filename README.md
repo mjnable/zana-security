@@ -41,7 +41,9 @@ $token = $signer->issue($user->identifier(), 3600, ['clinic' => 'north']);
 $claims = $signer->verify($token);                     // InvalidTokenException: malformed, signature or expired
 ```
 
-- **Passwords:** longer than 4,096 bytes are rejected.
+- **Passwords:** longer than 4,096 bytes are rejected. For bcrypt, passwords
+  over 72 bytes or containing a NUL byte are pre-hashed with SHA-384, so every
+  byte counts.
 - **Tokens:** a token is `base64url(JSON) . "." . base64url(HMAC-SHA256)`.
   It is signed, not encrypted, so keep secrets out of the claims.
 
