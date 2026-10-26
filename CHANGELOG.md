@@ -3,6 +3,20 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.2.0 — unreleased
+
+### Added
+
+- Rate limiting: `RateLimiter` (fixed and sliding windows), `#[RateLimit]` and
+  `RateLimitMiddleware`, with `RateLimit-*` headers and 429 responses (FE-10).
+- Anti-spam for public forms: a honeypot field and a minimum form age in `CsrfTokens`
+  (`security.csrf.honeypot`, `security.csrf.minimum_age`), and `security.csrf.spam_redirect`
+  (FE-22).
+- Session sign-in for a back office: `SessionLogin` with attempt limits,
+  `SessionAuthenticationMiddleware` with a redirect to `security.login.path`,
+  `PasswordUserProviderInterface`, `PasswordUpgraderInterface` and `PasswordResetTokens` (FE-28).
+  The session classes are registered when `mj-zana/session` is installed.
+
 ## 2.1.0 — 2026-10-26
 
 ### Added
