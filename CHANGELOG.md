@@ -3,6 +3,15 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.4.0 — unreleased
+
+### Changed
+
+- `PasswordResetTokens` is registered scoped, so the user provider may be scoped like other
+  repositories; a singleton that receives it now fails the build, naming both (FE-40).
+- Factory registrations declare the services they resolve with `uses()`.
+- Requires `mj-zana/core` ^2.4.
+
 ## 2.3.0 — 2026-10-26
 
 ### Changed

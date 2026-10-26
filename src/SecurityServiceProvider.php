@@ -39,7 +39,7 @@ final class SecurityServiceProvider extends ServiceProvider
                 $options = $r->get(ConfigurationInterface::class)->array('security.password_options', []);
 
                 return new PasswordHasher($options);
-            })
+            })->uses(ConfigurationInterface::class)
             ->singleton(TokenSigner::class, static function (ServiceResolverInterface $r): TokenSigner {
                 $config = $r->get(ConfigurationInterface::class);
                 if (!$config->has('security.secret')) {
@@ -47,7 +47,7 @@ final class SecurityServiceProvider extends ServiceProvider
                 }
 
                 return new TokenSigner($config->string('security.secret'));
-            })
+            })->uses(ConfigurationInterface::class)
             ->singleton(Authorizer::class, static function (ServiceResolverInterface $r): Authorizer {
                 $config = $r->get(ConfigurationInterface::class);
                 /** @var array<string, list<string>> $roles */
@@ -64,17 +64,17 @@ final class SecurityServiceProvider extends ServiceProvider
                 }
 
                 return new Authorizer($roles, $hierarchy, $policies);
-            })
+            })->uses(ConfigurationInterface::class)
             ->scoped(SecurityContext::class)
             ->scoped(AuthenticationMiddleware::class, static fn (ServiceResolverInterface $r): AuthenticationMiddleware => new AuthenticationMiddleware(
                 $r->get(TokenSigner::class),
                 $r->get(UserProviderInterface::class),
                 $r->get(SecurityContext::class),
-            ))
+            ))->uses(TokenSigner::class, UserProviderInterface::class, SecurityContext::class)
             ->scoped(AuthorizationMiddleware::class, static fn (ServiceResolverInterface $r): AuthorizationMiddleware => new AuthorizationMiddleware(
                 $r->get(SecurityContext::class),
                 $r->get(Authorizer::class),
-            ))
+            ))->uses(SecurityContext::class, Authorizer::class)
             ->singleton(CsrfTokens::class, static function (ServiceResolverInterface $r): CsrfTokens {
                 $config = $r->get(ConfigurationInterface::class);
                 $cache = $r->has(CacheInterface::class) ? $r->get(CacheInterface::class) : null;
@@ -87,29 +87,30 @@ final class SecurityServiceProvider extends ServiceProvider
                     $config->int('security.csrf.minimum_age', 0),
                     $config->has('security.csrf.honeypot') ? $config->string('security.csrf.honeypot') : null,
                 );
-            })
+            })->uses(ConfigurationInterface::class, CacheInterface::class, TokenSigner::class)
             ->scoped(CsrfMiddleware::class, static function (ServiceResolverInterface $r): CsrfMiddleware {
                 $config = $r->get(ConfigurationInterface::class);
                 $tokens = $r->get(CsrfTokens::class);
                 assert($tokens instanceof CsrfTokens);
 
                 return new CsrfMiddleware($tokens, $config->has('security.csrf.spam_redirect') ? $config->string('security.csrf.spam_redirect') : null);
-            })
-            ->singleton(RateLimiter::class, static fn (ServiceResolverInterface $r): RateLimiter => new RateLimiter(self::cache($r, 'Rate limiting')))
+            })->uses(ConfigurationInterface::class, CsrfTokens::class)
+            ->singleton(RateLimiter::class, static fn (ServiceResolverInterface $r): RateLimiter => new RateLimiter(self::cache($r, 'Rate limiting')))->uses(CacheInterface::class)
             ->scoped(RateLimitMiddleware::class, static function (ServiceResolverInterface $r): RateLimitMiddleware {
                 $limiter = $r->get(RateLimiter::class);
                 $context = $r->get(SecurityContext::class);
                 assert($limiter instanceof RateLimiter && $context instanceof SecurityContext);
 
                 return new RateLimitMiddleware($limiter, $context);
-            })
-            ->singleton(PasswordResetTokens::class, static function (ServiceResolverInterface $r): PasswordResetTokens {
+            })->uses(RateLimiter::class, SecurityContext::class)
+            // Scoped, so the user provider may be scoped like other repositories (FE-40)
+            ->scoped(PasswordResetTokens::class, static function (ServiceResolverInterface $r): PasswordResetTokens {
                 $signer = $r->get(TokenSigner::class);
                 $users = $r->get(PasswordUserProviderInterface::class);
                 assert($signer instanceof TokenSigner && $users instanceof PasswordUserProviderInterface);
 
                 return new PasswordResetTokens($signer, self::cache($r, 'Password reset tokens'), $users, $r->get(ConfigurationInterface::class)->int('security.password_reset.lifetime', 3600));
-            });
+            })->uses(TokenSigner::class, CacheInterface::class, PasswordUserProviderInterface::class, ConfigurationInterface::class);
 
         if (interface_exists(SessionInterface::class)) {
             $services
@@ -123,7 +124,7 @@ final class SecurityServiceProvider extends ServiceProvider
                     assert($users instanceof PasswordUserProviderInterface && $hasher instanceof PasswordHasher && $session instanceof SessionInterface && $context instanceof SecurityContext);
 
                     return new SessionLogin($users, $hasher, $session, $context, $limiter instanceof RateLimiter ? $limiter : null, $config->int('security.login.max_attempts', 5), $config->int('security.login.window', 900));
-                })
+                })->uses(ConfigurationInterface::class, PasswordUserProviderInterface::class, PasswordHasher::class, SessionInterface::class, SecurityContext::class, RateLimiter::class)
                 ->scoped(SessionAuthenticationMiddleware::class, static function (ServiceResolverInterface $r): SessionAuthenticationMiddleware {
                     $config = $r->get(ConfigurationInterface::class);
                     $sessions = $r->get(SessionContext::class);
@@ -132,7 +133,7 @@ final class SecurityServiceProvider extends ServiceProvider
                     assert($sessions instanceof SessionContext && $users instanceof UserProviderInterface && $context instanceof SecurityContext);
 
                     return new SessionAuthenticationMiddleware($sessions, $users, $context, $config->has('security.login.path') ? $config->string('security.login.path') : null);
-                });
+                })->uses(ConfigurationInterface::class, SessionContext::class, UserProviderInterface::class, PasswordUserProviderInterface::class, SecurityContext::class);
         }
     }
 
