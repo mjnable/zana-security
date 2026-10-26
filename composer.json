@@ -31,13 +31,13 @@
         "files": ["tests/Fixtures.php"]
     },
     "repositories": [
-        { "type": "path", "url": "../zana-container", "options": { "symlink": true, "versions": { "mj-zana/container": "2.2.0" } } },
-        { "type": "path", "url": "../zana-configuration", "options": { "symlink": true, "versions": { "mj-zana/configuration": "2.2.0" } } },
-        { "type": "path", "url": "../zana-core", "options": { "symlink": true, "versions": { "mj-zana/core": "2.2.0" } } },
-        { "type": "path", "url": "../zana-ddd", "options": { "symlink": true, "versions": { "mj-zana/ddd": "2.2.0" } } },
-        { "type": "path", "url": "../zana-http", "options": { "symlink": true, "versions": { "mj-zana/http": "2.2.0" } } },
-        { "type": "path", "url": "../zana-routing", "options": { "symlink": true, "versions": { "mj-zana/routing": "2.2.0" } } },
-        { "type": "path", "url": "../zana-session", "options": { "symlink": true, "versions": { "mj-zana/session": "2.2.0" } } }
+        { "type": "path", "url": "../zana-container", "options": { "symlink": true, "versions": { "mj-zana/container": "2.3.0" } } },
+        { "type": "path", "url": "../zana-configuration", "options": { "symlink": true, "versions": { "mj-zana/configuration": "2.3.0" } } },
+        { "type": "path", "url": "../zana-core", "options": { "symlink": true, "versions": { "mj-zana/core": "2.3.0" } } },
+        { "type": "path", "url": "../zana-ddd", "options": { "symlink": true, "versions": { "mj-zana/ddd": "2.3.0" } } },
+        { "type": "path", "url": "../zana-http", "options": { "symlink": true, "versions": { "mj-zana/http": "2.3.0" } } },
+        { "type": "path", "url": "../zana-routing", "options": { "symlink": true, "versions": { "mj-zana/routing": "2.3.0" } } },
+        { "type": "path", "url": "../zana-session", "options": { "symlink": true, "versions": { "mj-zana/session": "2.3.0" } } }
     ],
     "scripts": {
         "test": "phpunit",
