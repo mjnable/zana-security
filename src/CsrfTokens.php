@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Zana\Security;
 
+use Closure;
 use Psr\SimpleCache\CacheInterface;
 
 /**
@@ -24,15 +25,44 @@ final readonly class CsrfTokens
 
     private const string SUBJECT_PREFIX = 'csrf:';
 
+    /** @var Closure(): int */
+    private Closure $now;
+
+    /**
+     * @param int $minimumAge Anti-spam: a form posted sooner after its token was issued looks automated (0 disables)
+     * @param string|null $honeypot Anti-spam: a hidden field people never fill in; csrf_field() prints it
+     * @param (Closure(): int)|null $clock
+     */
     public function __construct(
         private TokenSigner $signer,
         private ?CacheInterface $cache = null,
         private int $lifetime = 7200,
         private bool $singleUse = false,
+        public int $minimumAge = 0,
+        public ?string $honeypot = null,
+        ?Closure $clock = null,
     ) {
         if ($singleUse && $cache === null) {
             throw new SecurityException('Single-use CSRF tokens need a PSR-16 cache.');
         }
+        $this->now = $clock ?? static fn (): int => time();
+    }
+
+    /**
+     * Whether a valid token was issued less than minimumAge seconds ago.
+     */
+    public function isTooFresh(string $token): bool
+    {
+        if ($this->minimumAge <= 0) {
+            return false;
+        }
+        try {
+            $issuedAt = $this->signer->verify($token)->issuedAt->getTimestamp();
+        } catch (InvalidTokenException) {
+            return false;
+        }
+
+        return ($this->now)() - $issuedAt < $this->minimumAge;
     }
 
     public function issue(string $form = self::DEFAULT_FORM): string

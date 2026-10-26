@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Zana\Security\Middleware;
 
+use Nyholm\Psr7\Response;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
@@ -25,13 +26,19 @@ use Zana\Security\Internal\HandlerReflection;
  * Requests with an Authorization header are not checked: token-authenticated
  * APIs are not exposed to CSRF. Handlers marked #[WithoutCsrf] are skipped
  * when the middleware runs as route middleware.
+ *
+ * Anti-spam (FE-22): a filled honeypot field, or a form posted sooner than
+ * the tokens' minimum age, is treated as a bot. With $spamRedirect the bot
+ * gets a 303 to that path, as if it had succeeded; otherwise a 403.
  */
 final readonly class CsrfMiddleware implements MiddlewareInterface
 {
     private const array UNSAFE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
 
-    public function __construct(private CsrfTokens $tokens)
-    {
+    public function __construct(
+        private CsrfTokens $tokens,
+        private ?string $spamRedirect = null,
+    ) {
     }
 
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
@@ -60,6 +67,15 @@ final readonly class CsrfMiddleware implements MiddlewareInterface
 
         if (!is_string($token) || $token === '' || !is_string($form) || !$this->tokens->verify($token, $form)) {
             throw new ForbiddenHttpException('The form has expired or is invalid. Reload the page and try again.');
+        }
+
+        $honeypot = $this->tokens->honeypot;
+        $trapped = $honeypot !== null && is_string($fields[$honeypot] ?? null) && trim($fields[$honeypot]) !== '';
+        if ($trapped || $this->tokens->isTooFresh($token)) {
+            if ($this->spamRedirect !== null) {
+                return new Response(303, ['Location' => $this->spamRedirect]);
+            }
+            throw new ForbiddenHttpException('The form could not be accepted.');
         }
 
         return $handler->handle($request);

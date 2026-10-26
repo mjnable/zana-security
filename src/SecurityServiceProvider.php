@@ -12,6 +12,12 @@ use Zana\Core\ServiceProvider;
 use Zana\Security\Middleware\AuthenticationMiddleware;
 use Zana\Security\Middleware\AuthorizationMiddleware;
 use Zana\Security\Middleware\CsrfMiddleware;
+use Zana\Security\Middleware\RateLimitMiddleware;
+use Zana\Security\RateLimit\RateLimiter;
+use Zana\Security\Session\SessionAuthenticationMiddleware;
+use Zana\Security\Session\SessionLogin;
+use Zana\Session\SessionContext;
+use Zana\Session\SessionInterface;
 
 /**
  * Registers the hasher, the token signer (secret from security.secret), the
@@ -78,9 +84,67 @@ final class SecurityServiceProvider extends ServiceProvider
                     $cache instanceof CacheInterface ? $cache : null,
                     $config->int('security.csrf.lifetime', 7200),
                     $config->bool('security.csrf.single_use', false),
+                    $config->int('security.csrf.minimum_age', 0),
+                    $config->has('security.csrf.honeypot') ? $config->string('security.csrf.honeypot') : null,
                 );
             })
-            ->scoped(CsrfMiddleware::class);
+            ->scoped(CsrfMiddleware::class, static function (ServiceResolverInterface $r): CsrfMiddleware {
+                $config = $r->get(ConfigurationInterface::class);
+                $tokens = $r->get(CsrfTokens::class);
+                assert($tokens instanceof CsrfTokens);
+
+                return new CsrfMiddleware($tokens, $config->has('security.csrf.spam_redirect') ? $config->string('security.csrf.spam_redirect') : null);
+            })
+            ->singleton(RateLimiter::class, static fn (ServiceResolverInterface $r): RateLimiter => new RateLimiter(self::cache($r, 'Rate limiting')))
+            ->scoped(RateLimitMiddleware::class, static function (ServiceResolverInterface $r): RateLimitMiddleware {
+                $limiter = $r->get(RateLimiter::class);
+                $context = $r->get(SecurityContext::class);
+                assert($limiter instanceof RateLimiter && $context instanceof SecurityContext);
+
+                return new RateLimitMiddleware($limiter, $context);
+            })
+            ->singleton(PasswordResetTokens::class, static function (ServiceResolverInterface $r): PasswordResetTokens {
+                $signer = $r->get(TokenSigner::class);
+                $users = $r->get(PasswordUserProviderInterface::class);
+                assert($signer instanceof TokenSigner && $users instanceof PasswordUserProviderInterface);
+
+                return new PasswordResetTokens($signer, self::cache($r, 'Password reset tokens'), $users, $r->get(ConfigurationInterface::class)->int('security.password_reset.lifetime', 3600));
+            });
+
+        if (interface_exists(SessionInterface::class)) {
+            $services
+                ->scoped(SessionLogin::class, static function (ServiceResolverInterface $r): SessionLogin {
+                    $config = $r->get(ConfigurationInterface::class);
+                    $users = $r->get(PasswordUserProviderInterface::class);
+                    $hasher = $r->get(PasswordHasher::class);
+                    $session = $r->get(SessionInterface::class);
+                    $context = $r->get(SecurityContext::class);
+                    $limiter = $r->has(CacheInterface::class) ? $r->get(RateLimiter::class) : null;
+                    assert($users instanceof PasswordUserProviderInterface && $hasher instanceof PasswordHasher && $session instanceof SessionInterface && $context instanceof SecurityContext);
+
+                    return new SessionLogin($users, $hasher, $session, $context, $limiter instanceof RateLimiter ? $limiter : null, $config->int('security.login.max_attempts', 5), $config->int('security.login.window', 900));
+                })
+                ->scoped(SessionAuthenticationMiddleware::class, static function (ServiceResolverInterface $r): SessionAuthenticationMiddleware {
+                    $config = $r->get(ConfigurationInterface::class);
+                    $sessions = $r->get(SessionContext::class);
+                    $users = $r->has(UserProviderInterface::class) ? $r->get(UserProviderInterface::class) : $r->get(PasswordUserProviderInterface::class);
+                    $context = $r->get(SecurityContext::class);
+                    assert($sessions instanceof SessionContext && $users instanceof UserProviderInterface && $context instanceof SecurityContext);
+
+                    return new SessionAuthenticationMiddleware($sessions, $users, $context, $config->has('security.login.path') ? $config->string('security.login.path') : null);
+                });
+        }
+    }
+
+    private static function cache(ServiceResolverInterface $resolver, string $feature): CacheInterface
+    {
+        if (!$resolver->has(CacheInterface::class)) {
+            throw new SecurityException("{$feature} need a PSR-16 cache: register mj-zana/cache or another " . CacheInterface::class . '.');
+        }
+        $cache = $resolver->get(CacheInterface::class);
+        assert($cache instanceof CacheInterface);
+
+        return $cache;
     }
 
     public function origin(): string

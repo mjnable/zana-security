@@ -42,6 +42,24 @@ final class HandlerReflection
     }
 
     /**
+     * The attribute on the method, otherwise on the class.
+     *
+     * @template T of object
+     * @param class-string<T> $attribute
+     * @return T|null
+     */
+    public static function firstAttribute(mixed $handler, string $attribute): ?object
+    {
+        foreach (array_reverse(self::targets($handler)) as $target) {
+            foreach ($target->getAttributes($attribute) as $found) {
+                return $found->newInstance();
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * @param class-string $class
      *
      * @return list<\ReflectionClass<object>|\ReflectionMethod>
