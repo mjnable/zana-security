@@ -9,6 +9,7 @@ use Zana\Configuration\ConfigurationInterface;
 use Zana\Container\Contracts\ServiceCollectionInterface;
 use Zana\Container\Contracts\ServiceResolverInterface;
 use Zana\Core\ServiceProvider;
+use Zana\Security\Internal\MissingCache;
 use Zana\Security\Middleware\AuthenticationMiddleware;
 use Zana\Security\Middleware\AuthorizationMiddleware;
 use Zana\Security\Middleware\CsrfMiddleware;
@@ -137,10 +138,13 @@ final class SecurityServiceProvider extends ServiceProvider
         }
     }
 
+    /**
+     * The application's cache; without one, a stand-in that fails when used, not when the service is created (2.9).
+     */
     private static function cache(ServiceResolverInterface $resolver, string $feature): CacheInterface
     {
         if (!$resolver->has(CacheInterface::class)) {
-            throw new SecurityException("{$feature} need a PSR-16 cache: register mj-zana/cache or another " . CacheInterface::class . '.');
+            return new MissingCache($feature);
         }
         $cache = $resolver->get(CacheInterface::class);
         assert($cache instanceof CacheInterface);

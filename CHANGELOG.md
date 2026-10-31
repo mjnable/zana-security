@@ -3,6 +3,14 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.9.0 — 2026-11-01
+
+### Fixed
+
+- Without a PSR-16 cache, `RateLimiter` and `PasswordResetTokens` can be created and fail only when
+  they are used, so `check` and `doctor` no longer report the rate limiter in applications that do
+  not rate-limit (ADR-024).
+
 ## 2.4.0 — 2026-10-26
 
 ### Changed
