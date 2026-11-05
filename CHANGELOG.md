@@ -3,6 +3,21 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.15.0 — Unreleased
+
+### Added
+
+- Security events (FE-58): with an event dispatcher, `SessionLogin` dispatches `SignInSucceeded`,
+  `SignInFailed` (`invalid_credentials` or `throttled`) and `SignedOut`. `PasswordResetTokens`
+  dispatches `PasswordResetRequested` and `PasswordResetTokenUsed`. All of them implement
+  `SecurityEvent`, and mj-zana/audit records them in its security audit log.
+- `SessionLogin::logout()` takes the client address, for the `SignedOut` event.
+
+### Changed
+
+- Requires `psr/event-dispatcher` ^1.0. The provider gives the dispatcher to `SessionLogin` and
+  `PasswordResetTokens` when one is registered; without one, nothing changes.
+
 ## 2.9.0 — 2026-11-01
 
 ### Fixed

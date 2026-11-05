@@ -105,6 +105,22 @@ With `mj-zana/view`, `csrf_field('contact')` prints both fields.
 - **Configuration:** `security.csrf.lifetime` (default 7200 s), and
   `security.csrf.single_use`, which needs a PSR-16 cache.
 
+## New in 2.15: security events
+
+With an event dispatcher (`mj-zana/events`), `SessionLogin` dispatches
+`SignInSucceeded`, `SignInFailed` (wrong credentials, or throttled) and
+`SignedOut`. `PasswordResetTokens` dispatches `PasswordResetRequested` and
+`PasswordResetTokenUsed`. They all implement `SecurityEvent`.
+`mj-zana/audit` records them in its security audit log. You can also listen
+to them yourself, for example to alert on repeated failures:
+
+```php
+$listeners->listen(SignInFailed::class, AlertOnRepeatedFailures::class);
+```
+
+A failed sign-in carries the login that was typed and the client address,
+never the password.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

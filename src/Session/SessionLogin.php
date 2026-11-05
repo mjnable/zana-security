@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 namespace Zana\Security\Session;
 
+use Psr\EventDispatcher\EventDispatcherInterface;
 use Zana\Http\Exception\TooManyRequestsHttpException;
+use Zana\Security\Event\SignedOut;
+use Zana\Security\Event\SignInFailed;
+use Zana\Security\Event\SignInSucceeded;
 use Zana\Security\PasswordHasher;
 use Zana\Security\PasswordUpgraderInterface;
 use Zana\Security\PasswordUserProviderInterface;
@@ -26,6 +30,8 @@ use Zana\Session\SessionInterface;
  * - The session gets a new id at login, against session fixation.
  * - Passwords hashed with old settings are rehashed when the provider
  *   implements PasswordUpgraderInterface.
+ * - With an event dispatcher, it dispatches SignInSucceeded, SignInFailed
+ *   (wrong credentials or throttled) and SignedOut (2.15).
  */
 final class SessionLogin
 {
@@ -41,6 +47,7 @@ final class SessionLogin
         private readonly ?RateLimiter $limiter = null,
         private readonly int $maxAttempts = 5,
         private readonly int $window = 900,
+        private readonly ?EventDispatcherInterface $events = null,
     ) {
     }
 
@@ -53,6 +60,7 @@ final class SessionLogin
         foreach ($keys as $key) {
             $result = $this->limiter?->attempt($key, $this->maxAttempts, $this->window);
             if ($result !== null && !$result->allowed) {
+                $this->events?->dispatch(new SignInFailed($login, SignInFailed::THROTTLED, $clientIp));
                 throw new TooManyRequestsHttpException($result->resetAfter, 'Too many sign-in attempts. Please wait and try again.');
             }
         }
@@ -62,6 +70,8 @@ final class SessionLogin
         // Verify against a dummy hash for unknown users, so the timing does not reveal them.
         $valid = $this->hasher->verify($password, $hash ?? self::dummyHash($this->hasher)) && $hash !== null;
         if (!$valid) {
+            $this->events?->dispatch(new SignInFailed($login, SignInFailed::INVALID_CREDENTIALS, $clientIp));
+
             return null;
         }
 
@@ -75,14 +85,19 @@ final class SessionLogin
         $this->session->regenerate();
         $this->session->set(self::SESSION_KEY, $user->identifier());
         $this->context->setUser($user);
+        $this->events?->dispatch(new SignInSucceeded($user->identifier(), $clientIp));
 
         return $user;
     }
 
-    public function logout(): void
+    public function logout(string $clientIp = ''): void
     {
+        $user = $this->context->user();
         $this->session->invalidate();
         $this->context->setUser(null);
+        if ($user !== null) {
+            $this->events?->dispatch(new SignedOut($user->identifier(), $clientIp));
+        }
     }
 
     private static function dummyHash(PasswordHasher $hasher): string

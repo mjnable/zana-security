@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Zana\Security;
 
+use Psr\EventDispatcher\EventDispatcherInterface;
 use Psr\SimpleCache\CacheInterface;
+use Zana\Security\Event\PasswordResetRequested;
+use Zana\Security\Event\PasswordResetTokenUsed;
 
 /**
  * Password reset links (FE-28): a signed token, sent by email, that works
@@ -13,6 +16,9 @@ use Psr\SimpleCache\CacheInterface;
  *     $link = $urls->generate('password.reset', ['token' => $resets->issue($user)]);
  *     …
  *     $user = $resets->consume($token) ?? throw new NotFoundHttpException();
+ *
+ * With an event dispatcher, issue() dispatches PasswordResetRequested and a
+ * successful consume() PasswordResetTokenUsed (2.15).
  */
 final readonly class PasswordResetTokens
 {
@@ -23,15 +29,19 @@ final readonly class PasswordResetTokens
         private CacheInterface $cache,
         private PasswordUserProviderInterface $users,
         private int $lifetime = 3600,
+        private ?EventDispatcherInterface $events = null,
     ) {
     }
 
     public function issue(UserInterface $user): string
     {
-        return $this->signer->issue(self::SUBJECT_PREFIX . $user->identifier(), $this->lifetime, [
+        $token = $this->signer->issue(self::SUBJECT_PREFIX . $user->identifier(), $this->lifetime, [
             'nonce' => bin2hex(random_bytes(16)),
             'password' => $this->fingerprint($user),
         ]);
+        $this->events?->dispatch(new PasswordResetRequested($user->identifier()));
+
+        return $token;
     }
 
     /**
@@ -45,6 +55,7 @@ final readonly class PasswordResetTokens
         }
         $nonce = $this->signer->verify($token)->claim('nonce');
         $this->cache->set('zana.reset.' . hash('xxh128', (string) $nonce), true, $this->lifetime);
+        $this->events?->dispatch(new PasswordResetTokenUsed($user->identifier()));
 
         return $user;
     }

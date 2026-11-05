@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Zana\Security;
 
+use Psr\EventDispatcher\EventDispatcherInterface;
 use Psr\SimpleCache\CacheInterface;
 use Zana\Configuration\ConfigurationInterface;
 use Zana\Container\Contracts\ServiceCollectionInterface;
@@ -110,8 +111,8 @@ final class SecurityServiceProvider extends ServiceProvider
                 $users = $r->get(PasswordUserProviderInterface::class);
                 assert($signer instanceof TokenSigner && $users instanceof PasswordUserProviderInterface);
 
-                return new PasswordResetTokens($signer, self::cache($r, 'Password reset tokens'), $users, $r->get(ConfigurationInterface::class)->int('security.password_reset.lifetime', 3600));
-            })->uses(TokenSigner::class, CacheInterface::class, PasswordUserProviderInterface::class, ConfigurationInterface::class);
+                return new PasswordResetTokens($signer, self::cache($r, 'Password reset tokens'), $users, $r->get(ConfigurationInterface::class)->int('security.password_reset.lifetime', 3600), self::events($r));
+            })->uses(TokenSigner::class, CacheInterface::class, PasswordUserProviderInterface::class, ConfigurationInterface::class, EventDispatcherInterface::class);
 
         if (interface_exists(SessionInterface::class)) {
             $services
@@ -124,8 +125,8 @@ final class SecurityServiceProvider extends ServiceProvider
                     $limiter = $r->has(CacheInterface::class) ? $r->get(RateLimiter::class) : null;
                     assert($users instanceof PasswordUserProviderInterface && $hasher instanceof PasswordHasher && $session instanceof SessionInterface && $context instanceof SecurityContext);
 
-                    return new SessionLogin($users, $hasher, $session, $context, $limiter instanceof RateLimiter ? $limiter : null, $config->int('security.login.max_attempts', 5), $config->int('security.login.window', 900));
-                })->uses(ConfigurationInterface::class, PasswordUserProviderInterface::class, PasswordHasher::class, SessionInterface::class, SecurityContext::class, RateLimiter::class)
+                    return new SessionLogin($users, $hasher, $session, $context, $limiter instanceof RateLimiter ? $limiter : null, $config->int('security.login.max_attempts', 5), $config->int('security.login.window', 900), self::events($r));
+                })->uses(ConfigurationInterface::class, PasswordUserProviderInterface::class, PasswordHasher::class, SessionInterface::class, SecurityContext::class, RateLimiter::class, EventDispatcherInterface::class)
                 ->scoped(SessionAuthenticationMiddleware::class, static function (ServiceResolverInterface $r): SessionAuthenticationMiddleware {
                     $config = $r->get(ConfigurationInterface::class);
                     $sessions = $r->get(SessionContext::class);
@@ -150,6 +151,16 @@ final class SecurityServiceProvider extends ServiceProvider
         assert($cache instanceof CacheInterface);
 
         return $cache;
+    }
+
+    /**
+     * The application's event dispatcher, when mj-zana/events (or another PSR-14 dispatcher) is registered (2.15).
+     */
+    private static function events(ServiceResolverInterface $resolver): ?EventDispatcherInterface
+    {
+        $events = $resolver->has(EventDispatcherInterface::class) ? $resolver->get(EventDispatcherInterface::class) : null;
+
+        return $events instanceof EventDispatcherInterface ? $events : null;
     }
 
     public function origin(): string
