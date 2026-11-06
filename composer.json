@@ -6,7 +6,7 @@
     "license": "MIT",
     "require": {
         "php": "^8.5",
-        "mj-zana/core": "^2.4",
+        "mj-zana/core": "^2.11",
         "mj-zana/http": "^2.2",
         "psr/event-dispatcher": "^1.0",
         "psr/simple-cache": "^3.0"

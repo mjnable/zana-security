@@ -3,6 +3,28 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.16.0 — Unreleased
+
+### Added
+
+- Second factors (FE-56, ADR-031):
+  - `Totp` (RFC 6238) and `TwoFactor`, which enrols, confirms, verifies and disables second factors,
+    with recovery codes and "remember this device" tokens;
+  - `TwoFactorUserProviderInterface`, whose state is sealed with libsodium under
+    `security.two_factor.key`;
+  - the `security.two_factor_key` check.
+- `SessionLogin::start()`, `completeSecondFactor()` and `hasPendingSecondFactor()`, with
+  `LoginResult`. A user with a second factor is never signed in by the password alone; `attempt()`
+  then returns null and leaves the sign-in pending.
+- `OneTimeCodes`: numeric codes for a subject and a purpose. They are stored as HMACs, expire, work
+  once, and limit attempts and issuing.
+- Events: `TwoFactorEnabled`, `TwoFactorDisabled`, `TwoFactorFailed` and `RecoveryCodeUsed`.
+  `SignInSucceeded::$method` names the second step.
+
+### Changed
+
+- Requires `mj-zana/core` ^2.11, for the check.
+
 ## 2.15.0 — 2026-11-06
 
 ### Added

@@ -14,20 +14,28 @@ use Zana\Security\PasswordUpgraderInterface;
 use Zana\Security\PasswordUserProviderInterface;
 use Zana\Security\RateLimit\RateLimiter;
 use Zana\Security\SecurityContext;
+use Zana\Security\TwoFactor\TwoFactor;
 use Zana\Security\UserInterface;
 use Zana\Session\SessionInterface;
 
 /**
- * Signs users in and out of a session-based back office (FE-28):
+ * Signs users in and out of a session-based back office (FE-28), with a
+ * second factor when they have one (FE-56, 2.16):
  *
- *     $user = $login->attempt($input->string('email'), $input->string('password'), $context->clientIp());
- *     if ($user === null) { … show "Wrong email or password." … }
+ *     $result = $login->start($input->string('email'), $input->string('password'), $context->clientIp(), $deviceCookie);
+ *     if ($result->needsSecondFactor()) { … show the code form … }
+ *     $result = $login->completeSecondFactor($input->string('code'), $context->clientIp(), remember: true);
+ *     if ($result->deviceToken !== null) { … set the "remember this device" cookie … }
  *
  * - A failed attempt never says whether the account exists, and takes as
  *   long when it does not (a password is verified either way).
  * - Attempts are limited per login and per client address
- *   (security.login.max_attempts per security.login.window seconds).
- * - The session gets a new id at login, against session fixation.
+ *   (security.login.max_attempts per security.login.window seconds), and
+ *   second-factor attempts per user.
+ * - A user with a second factor is not signed in by the password alone: the
+ *   session holds a pending sign-in for 5 minutes, until a code completes it,
+ *   unless the device was remembered.
+ * - The session gets a new id at each step, against session fixation.
  * - Passwords hashed with old settings are rehashed when the provider
  *   implements PasswordUpgraderInterface.
  * - With an event dispatcher, it dispatches SignInSucceeded, SignInFailed
@@ -37,8 +45,17 @@ final class SessionLogin
 {
     public const string SESSION_KEY = '_security.user';
 
+    public const string PENDING_KEY = '_security.two_factor.user';
+
+    private const string PENDING_AT_KEY = '_security.two_factor.at';
+
+    private const int PENDING_SECONDS = 300;
+
     private static ?string $dummyHash = null;
 
+    /**
+     * @param (\Closure(): int)|null $clock
+     */
     public function __construct(
         private readonly PasswordUserProviderInterface $users,
         private readonly PasswordHasher $hasher,
@@ -48,14 +65,32 @@ final class SessionLogin
         private readonly int $maxAttempts = 5,
         private readonly int $window = 900,
         private readonly ?EventDispatcherInterface $events = null,
+        private readonly ?TwoFactor $twoFactor = null,
+        private readonly ?\Closure $clock = null,
     ) {
     }
 
     /**
+     * Sign in with a password; null when it fails, or when the user must
+     * still give a second-factor code (see start() and hasPendingSecondFactor()).
+     *
      * @throws TooManyRequestsHttpException After too many failed attempts
      */
     public function attempt(string $login, string $password, string $clientIp = ''): ?UserInterface
     {
+        return $this->start($login, $password, $clientIp)->user;
+    }
+
+    /**
+     * The first step: the password. Signs the user in, or asks for a second factor.
+     *
+     * @param string|null $deviceToken The "remember this device" cookie, which skips the second factor
+     *
+     * @throws TooManyRequestsHttpException After too many failed attempts
+     */
+    public function start(string $login, #[\SensitiveParameter] string $password, string $clientIp = '', ?string $deviceToken = null): LoginResult
+    {
+        $this->session->remove(self::PENDING_KEY);
         $keys = ['login:' . strtolower(trim($login)), 'login-ip:' . $clientIp];
         foreach ($keys as $key) {
             $result = $this->limiter?->attempt($key, $this->maxAttempts, $this->window);
@@ -72,7 +107,7 @@ final class SessionLogin
         if (!$valid) {
             $this->events?->dispatch(new SignInFailed($login, SignInFailed::INVALID_CREDENTIALS, $clientIp));
 
-            return null;
+            return new LoginResult(LoginResult::FAILED);
         }
 
         foreach ($keys as $key) {
@@ -82,12 +117,48 @@ final class SessionLogin
             $this->users->upgradePassword($user, $this->hasher->hash($password));
         }
 
-        $this->session->regenerate();
-        $this->session->set(self::SESSION_KEY, $user->identifier());
-        $this->context->setUser($user);
-        $this->events?->dispatch(new SignInSucceeded($user->identifier(), $clientIp));
+        if ($this->twoFactor !== null && $this->twoFactor->enabled($user)) {
+            if ($this->twoFactor->rememberedDevice($user, $deviceToken)) {
+                return $this->signIn($user, $clientIp, 'session+remembered_device');
+            }
+            $this->session->regenerate();
+            $this->session->set(self::PENDING_KEY, $user->identifier());
+            $this->session->set(self::PENDING_AT_KEY, $this->now());
 
-        return $user;
+            return new LoginResult(LoginResult::SECOND_FACTOR_REQUIRED, null);
+        }
+
+        return $this->signIn($user, $clientIp, 'session');
+    }
+
+    /**
+     * Whether a password was accepted and the session waits for a second-factor code.
+     */
+    public function hasPendingSecondFactor(): bool
+    {
+        return $this->pendingUser() !== null;
+    }
+
+    /**
+     * The second step: a code from the authenticator app, or a recovery code.
+     *
+     * @param bool $remember Also return a device token for a "remember this device" cookie
+     *
+     * @throws TooManyRequestsHttpException After too many failed codes
+     */
+    public function completeSecondFactor(string $code, string $clientIp = '', bool $remember = false): LoginResult
+    {
+        $user = $this->pendingUser();
+        if ($user === null || $this->twoFactor === null) {
+            return new LoginResult(LoginResult::FAILED);
+        }
+        if (!$this->twoFactor->verify($user, $code, $clientIp)) {
+            return new LoginResult(LoginResult::FAILED);
+        }
+
+        $result = $this->signIn($user, $clientIp, 'session+two_factor');
+
+        return $remember ? new LoginResult(LoginResult::SIGNED_IN, $user, $this->twoFactor->deviceToken($user)) : $result;
     }
 
     public function logout(string $clientIp = ''): void
@@ -98,6 +169,40 @@ final class SessionLogin
         if ($user !== null) {
             $this->events?->dispatch(new SignedOut($user->identifier(), $clientIp));
         }
+    }
+
+    private function signIn(UserInterface $user, string $clientIp, string $method): LoginResult
+    {
+        $this->session->remove(self::PENDING_KEY);
+        $this->session->remove(self::PENDING_AT_KEY);
+        $this->session->regenerate();
+        $this->session->set(self::SESSION_KEY, $user->identifier());
+        $this->context->setUser($user);
+        $this->events?->dispatch(new SignInSucceeded($user->identifier(), $clientIp, $method));
+
+        return new LoginResult(LoginResult::SIGNED_IN, $user);
+    }
+
+    private function pendingUser(): ?UserInterface
+    {
+        $id = $this->session->get(self::PENDING_KEY);
+        $at = $this->session->get(self::PENDING_AT_KEY);
+        if (!is_string($id) || !is_int($at)) {
+            return null;
+        }
+        if ($this->now() - $at > self::PENDING_SECONDS) {
+            $this->session->remove(self::PENDING_KEY);
+            $this->session->remove(self::PENDING_AT_KEY);
+
+            return null;
+        }
+
+        return $this->users->findByIdentifier($id);
+    }
+
+    private function now(): int
+    {
+        return $this->clock === null ? time() : ($this->clock)();
     }
 
     private static function dummyHash(PasswordHasher $hasher): string

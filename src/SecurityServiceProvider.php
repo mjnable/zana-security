@@ -10,6 +10,8 @@ use Zana\Configuration\ConfigurationInterface;
 use Zana\Container\Contracts\ServiceCollectionInterface;
 use Zana\Container\Contracts\ServiceResolverInterface;
 use Zana\Core\ServiceProvider;
+use Zana\Core\Inspection\ApplicationCheck;
+use Zana\Security\Inspection\TwoFactorCheck;
 use Zana\Security\Internal\MissingCache;
 use Zana\Security\Middleware\AuthenticationMiddleware;
 use Zana\Security\Middleware\AuthorizationMiddleware;
@@ -18,6 +20,9 @@ use Zana\Security\Middleware\RateLimitMiddleware;
 use Zana\Security\RateLimit\RateLimiter;
 use Zana\Security\Session\SessionAuthenticationMiddleware;
 use Zana\Security\Session\SessionLogin;
+use Zana\Security\TwoFactor\OneTimeCodes;
+use Zana\Security\TwoFactor\Totp;
+use Zana\Security\TwoFactor\TwoFactor;
 use Zana\Session\SessionContext;
 use Zana\Session\SessionInterface;
 
@@ -26,6 +31,12 @@ use Zana\Session\SessionInterface;
  * authorizer (security.roles, security.hierarchy, security.policies), the
  * scoped SecurityContext, CSRF tokens (security.csrf.lifetime,
  * security.csrf.single_use, which needs a PSR-16 cache) and the middleware.
+ *
+ * Second factors (2.16): TwoFactor (scoped; the user provider implements
+ * TwoFactorUserProviderInterface; security.two_factor.key, .issuer,
+ * .max_attempts, .window, .remember_days), OneTimeCodes
+ * (security.one_time_codes.max_issues, .window) and the
+ * security.two_factor_key check.
  *
  * Policies are resolved from the container when registered there, otherwise
  * created without arguments. AuthenticationMiddleware needs the application's
@@ -112,7 +123,48 @@ final class SecurityServiceProvider extends ServiceProvider
                 assert($signer instanceof TokenSigner && $users instanceof PasswordUserProviderInterface);
 
                 return new PasswordResetTokens($signer, self::cache($r, 'Password reset tokens'), $users, $r->get(ConfigurationInterface::class)->int('security.password_reset.lifetime', 3600), self::events($r));
-            })->uses(TokenSigner::class, CacheInterface::class, PasswordUserProviderInterface::class, ConfigurationInterface::class, EventDispatcherInterface::class);
+            })->uses(TokenSigner::class, CacheInterface::class, PasswordUserProviderInterface::class, ConfigurationInterface::class, EventDispatcherInterface::class)
+            // Scoped, as the user provider may be (FE-40)
+            ->scoped(TwoFactor::class, static function (ServiceResolverInterface $r): TwoFactor {
+                $config = $r->get(ConfigurationInterface::class);
+                $users = $r->has(PasswordUserProviderInterface::class) ? $r->get(PasswordUserProviderInterface::class) : null;
+                if (!$users instanceof TwoFactorUserProviderInterface) {
+                    throw new SecurityException('Second factors need a user provider (PasswordUserProviderInterface) that implements ' . TwoFactorUserProviderInterface::class . '.');
+                }
+                $signer = $r->get(TokenSigner::class);
+                $limiter = $r->has(CacheInterface::class) ? $r->get(RateLimiter::class) : null;
+                assert($config instanceof ConfigurationInterface && $signer instanceof TokenSigner);
+
+                return new TwoFactor(
+                    $users,
+                    $config->has('security.two_factor.key') ? $config->string('security.two_factor.key') : '',
+                    $signer,
+                    new Totp(),
+                    $limiter instanceof RateLimiter ? $limiter : null,
+                    self::events($r),
+                    $config->string('security.two_factor.issuer', $config->string('app.name', 'Zana')),
+                    $config->int('security.two_factor.max_attempts', 5),
+                    $config->int('security.two_factor.window', 900),
+                    $config->int('security.two_factor.remember_days', 30),
+                );
+            })->uses(ConfigurationInterface::class, PasswordUserProviderInterface::class, TokenSigner::class, RateLimiter::class, EventDispatcherInterface::class)
+            ->singleton(OneTimeCodes::class, static function (ServiceResolverInterface $r): OneTimeCodes {
+                $config = $r->get(ConfigurationInterface::class);
+                $limiter = $r->has(CacheInterface::class) ? $r->get(RateLimiter::class) : null;
+                assert($config instanceof ConfigurationInterface);
+                // Codes live minutes: security.secret may key them when there is no two-factor key.
+                $key = $config->has('security.two_factor.key') ? $config->string('security.two_factor.key') : ($config->has('security.secret') ? $config->string('security.secret') : '');
+
+                return new OneTimeCodes(
+                    self::cache($r, 'One-time codes'),
+                    $key,
+                    $limiter instanceof RateLimiter ? $limiter : null,
+                    $config->int('security.one_time_codes.max_issues', 5),
+                    $config->int('security.one_time_codes.window', 3600),
+                );
+            })->uses(ConfigurationInterface::class, CacheInterface::class, RateLimiter::class)
+            ->singleton(TwoFactorCheck::class)
+            ->tag(ApplicationCheck::TAG, TwoFactorCheck::class);
 
         if (interface_exists(SessionInterface::class)) {
             $services
@@ -125,8 +177,11 @@ final class SecurityServiceProvider extends ServiceProvider
                     $limiter = $r->has(CacheInterface::class) ? $r->get(RateLimiter::class) : null;
                     assert($users instanceof PasswordUserProviderInterface && $hasher instanceof PasswordHasher && $session instanceof SessionInterface && $context instanceof SecurityContext);
 
-                    return new SessionLogin($users, $hasher, $session, $context, $limiter instanceof RateLimiter ? $limiter : null, $config->int('security.login.max_attempts', 5), $config->int('security.login.window', 900), self::events($r));
-                })->uses(ConfigurationInterface::class, PasswordUserProviderInterface::class, PasswordHasher::class, SessionInterface::class, SecurityContext::class, RateLimiter::class, EventDispatcherInterface::class)
+                    // A user provider that can hold second factors gets them checked: a password alone never signs such a user in.
+                    $twoFactor = $users instanceof TwoFactorUserProviderInterface ? $r->get(TwoFactor::class) : null;
+
+                    return new SessionLogin($users, $hasher, $session, $context, $limiter instanceof RateLimiter ? $limiter : null, $config->int('security.login.max_attempts', 5), $config->int('security.login.window', 900), self::events($r), $twoFactor instanceof TwoFactor ? $twoFactor : null);
+                })->uses(ConfigurationInterface::class, PasswordUserProviderInterface::class, PasswordHasher::class, SessionInterface::class, SecurityContext::class, RateLimiter::class, EventDispatcherInterface::class, TwoFactor::class)
                 ->scoped(SessionAuthenticationMiddleware::class, static function (ServiceResolverInterface $r): SessionAuthenticationMiddleware {
                     $config = $r->get(ConfigurationInterface::class);
                     $sessions = $r->get(SessionContext::class);

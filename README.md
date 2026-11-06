@@ -121,6 +121,61 @@ $listeners->listen(SignInFailed::class, AlertOnRepeatedFailures::class);
 A failed sign-in carries the login that was typed and the client address,
 never the password.
 
+## New in 2.16: second factors and one-time codes
+
+**TOTP** (RFC 6238, as authenticator apps compute it), with recovery codes.
+Make your user provider implement `TwoFactorUserProviderInterface`. It
+stores one opaque, encrypted string per user, in a nullable text column.
+Then set `security.two_factor.key`:
+
+```
+APP_SECURITY__TWO_FACTOR__KEY=   # php -r "echo bin2hex(random_bytes(32));"
+```
+
+```php
+$enrolment = $twoFactor->enrol($user);       // show $enrolment->uri as a QR code; give the recovery codes
+$twoFactor->confirm($user, $codeFromTheApp); // the second factor is now on
+```
+
+`SessionLogin` then asks for a code after the password:
+
+```php
+$result = $login->start($email, $password, $clientIp, $request->getCookieParams()['device'] ?? null);
+if ($result->needsSecondFactor()) { /* show the code form */ }
+$result = $login->completeSecondFactor($code, $clientIp, remember: true);
+// $result->deviceToken: a "remember this device" cookie (security.two_factor.remember_days)
+```
+
+- **No password-only sign-in:** a user with a second factor is never signed
+  in by the password alone, not even through `attempt()`. The pending
+  sign-in lasts 5 minutes.
+- **Codes:**
+  - a code is accepted 30 seconds early or late, and only once;
+  - recovery codes are stored as HMACs, each works once, and they can be
+    regenerated;
+  - attempts are limited per user (`security.two_factor.max_attempts` per
+    `security.two_factor.window`).
+- **Encryption:** the state is sealed with libsodium under
+  `security.two_factor.key`, which is separate from `security.secret`.
+  Changing the key locks out every user with a second factor, so keep it.
+- **Events:** `TwoFactorEnabled`, `TwoFactorDisabled`, `TwoFactorFailed` and
+  `RecoveryCodeUsed`. `SignInSucceeded` names the method, for example
+  `session+two_factor`.
+- **Check:** `security.two_factor_key` reports a missing or short key when
+  your user provider holds second factors.
+
+**One-time codes** confirm a phone number or an email address. Sending them
+by SMS or WhatsApp is up to you:
+
+```php
+$code = $codes->issue('+243810000000', 'phone.confirm');
+$codes->verify('+243810000000', 'phone.confirm', $typed);   // true once
+```
+
+A code expires (10 minutes by default) and works once. It is refused after 5
+wrong tries, and issuing is rate-limited (`security.one_time_codes.max_issues`
+per `security.one_time_codes.window`). Codes are kept in the PSR-16 cache.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
