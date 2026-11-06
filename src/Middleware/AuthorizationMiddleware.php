@@ -12,7 +12,9 @@ use Psr\Http\Server\RequestHandlerInterface;
 use Zana\Security\Attribute\RequiresAuthentication;
 use Zana\Security\Attribute\RequiresPermission;
 use Zana\Security\Authorizer;
+use Zana\Security\RoleAssignment\Scope;
 use Zana\Security\SecurityContext;
+use Zana\Security\SecurityException;
 
 /**
  * Enforces #[RequiresAuthentication] and #[RequiresPermission] on the
@@ -35,8 +37,8 @@ final readonly class AuthorizationMiddleware implements MiddlewareInterface
 
         if ($authenticate || $permissions !== []) {
             $user = $this->context->requireUser();
-            foreach ($permissions as $permission) {
-                $this->authorizer->authorize($user, $permission);
+            foreach ($permissions as $required) {
+                $this->authorizer->authorize($user, $required->permission, self::scope($required, $request));
             }
         }
 
@@ -44,7 +46,7 @@ final readonly class AuthorizationMiddleware implements MiddlewareInterface
     }
 
     /**
-     * @return array{bool, list<string>} whether authentication is required, and the permissions
+     * @return array{bool, list<RequiresPermission>} whether authentication is required, and the permissions
      */
     private static function requirements(mixed $handler): array
     {
@@ -60,11 +62,29 @@ final readonly class AuthorizationMiddleware implements MiddlewareInterface
         foreach ($targets as $target) {
             $authenticate = $authenticate || $target->getAttributes(RequiresAuthentication::class) !== [];
             foreach ($target->getAttributes(RequiresPermission::class) as $attribute) {
-                $permissions[] = $attribute->newInstance()->permission;
+                $required = $attribute->newInstance();
+                $permissions[$required->permission . "\n" . $required->scope . "\n" . $required->parameter()] = $required;
             }
         }
 
-        return [$authenticate, array_values(array_unique($permissions))];
+        return [$authenticate, array_values($permissions)];
+    }
+
+    /**
+     * The scope a scoped #[RequiresPermission] names, read from the route parameter (2.17).
+     */
+    private static function scope(RequiresPermission $required, ServerRequestInterface $request): ?Scope
+    {
+        $parameter = $required->parameter();
+        if ($required->scope === null || $parameter === null) {
+            return null;
+        }
+        $id = $request->getAttribute($parameter);
+        if (!is_scalar($id) || (string) $id === '') {
+            throw new SecurityException("#[RequiresPermission('{$required->permission}', scope: '{$required->scope}')] needs the route parameter {$parameter}; name it in the route path, or pass parameter:.");
+        }
+
+        return new Scope($required->scope, (string) $id);
     }
 
     /**

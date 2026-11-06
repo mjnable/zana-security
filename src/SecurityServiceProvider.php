@@ -11,6 +11,8 @@ use Zana\Container\Contracts\ServiceCollectionInterface;
 use Zana\Container\Contracts\ServiceResolverInterface;
 use Zana\Core\ServiceProvider;
 use Zana\Core\Inspection\ApplicationCheck;
+use Zana\Database\ConnectionInterface;
+use Zana\Security\Inspection\RoleAssignmentsCheck;
 use Zana\Security\Inspection\TwoFactorCheck;
 use Zana\Security\Internal\MissingCache;
 use Zana\Security\Middleware\AuthenticationMiddleware;
@@ -19,6 +21,10 @@ use Zana\Security\Middleware\CsrfMiddleware;
 use Zana\Security\Middleware\RateLimitMiddleware;
 use Zana\Security\RateLimit\RateLimiter;
 use Zana\Security\Session\SessionAuthenticationMiddleware;
+use Zana\Security\RoleAssignment\DatabaseRoleAssignmentStore;
+use Zana\Security\RoleAssignment\RoleAssignments;
+use Zana\Security\RoleAssignment\RoleAssignmentStoreInterface;
+use Zana\Security\RoleAssignment\ScopeHierarchyInterface;
 use Zana\Security\Session\SessionLogin;
 use Zana\Security\TwoFactor\OneTimeCodes;
 use Zana\Security\TwoFactor\Totp;
@@ -37,6 +43,14 @@ use Zana\Session\SessionInterface;
  * .max_attempts, .window, .remember_days), OneTimeCodes
  * (security.one_time_codes.max_issues, .window) and the
  * security.two_factor_key check.
+ *
+ * Scoped roles (2.17): the role assignment store is the application's
+ * RoleAssignmentStoreInterface, or DatabaseRoleAssignmentStore when
+ * security.role_assignments is "database" (table
+ * security.role_assignments_table); the Authorizer counts its roles, and a
+ * registered ScopeHierarchyInterface gives scopes their parents.
+ * RoleAssignments (scoped) changes them; the security.role_assignments
+ * check reads the table.
  *
  * Policies are resolved from the container when registered there, otherwise
  * created without arguments. AuthenticationMiddleware needs the application's
@@ -76,8 +90,20 @@ final class SecurityServiceProvider extends ServiceProvider
                     $policies[] = $r->has($class) ? $r->get($class) : new $class();
                 }
 
-                return new Authorizer($roles, $hierarchy, $policies);
-            })->uses(ConfigurationInterface::class)
+                $scopes = $r->has(ScopeHierarchyInterface::class) ? $r->get(ScopeHierarchyInterface::class) : null;
+
+                return new Authorizer($roles, $hierarchy, $policies, self::assignmentStore($r), $scopes instanceof ScopeHierarchyInterface ? $scopes : null);
+            })->uses(ConfigurationInterface::class, RoleAssignmentStoreInterface::class, ScopeHierarchyInterface::class, ConnectionInterface::class)
+            ->scoped(RoleAssignments::class, static function (ServiceResolverInterface $r): RoleAssignments {
+                $store = self::assignmentStore($r) ?? throw new SecurityException('Role assignments need a store: set security.role_assignments to "database" (with mj-zana/database), or register a ' . RoleAssignmentStoreInterface::class . '.');
+                $context = $r->get(SecurityContext::class);
+                assert($context instanceof SecurityContext);
+
+                return new RoleAssignments($store, self::events($r), $context);
+            })->uses(RoleAssignmentStoreInterface::class, ConnectionInterface::class, ConfigurationInterface::class, EventDispatcherInterface::class, SecurityContext::class)
+            ->singleton(RoleAssignmentsCheck::class, static fn (ServiceResolverInterface $r): RoleAssignmentsCheck => new RoleAssignmentsCheck(static fn (): ?RoleAssignmentStoreInterface => self::assignmentStore($r)))
+            ->uses(RoleAssignmentStoreInterface::class, ConnectionInterface::class, ConfigurationInterface::class)
+            ->tag(ApplicationCheck::TAG, RoleAssignmentsCheck::class)
             ->scoped(SecurityContext::class)
             ->scoped(AuthenticationMiddleware::class, static fn (ServiceResolverInterface $r): AuthenticationMiddleware => new AuthenticationMiddleware(
                 $r->get(TokenSigner::class),
@@ -206,6 +232,32 @@ final class SecurityServiceProvider extends ServiceProvider
         assert($cache instanceof CacheInterface);
 
         return $cache;
+    }
+
+    /**
+     * The application's RoleAssignmentStoreInterface, else the database store when
+     * security.role_assignments is "database", else none (2.17).
+     */
+    private static function assignmentStore(ServiceResolverInterface $resolver): ?RoleAssignmentStoreInterface
+    {
+        if ($resolver->has(RoleAssignmentStoreInterface::class)) {
+            $store = $resolver->get(RoleAssignmentStoreInterface::class);
+            assert($store instanceof RoleAssignmentStoreInterface);
+
+            return $store;
+        }
+        $config = $resolver->get(ConfigurationInterface::class);
+        assert($config instanceof ConfigurationInterface);
+        if (!$config->has('security.role_assignments')) {
+            return null;
+        }
+        if ($config->string('security.role_assignments') !== 'database' || !interface_exists(ConnectionInterface::class)) {
+            throw new SecurityException('security.role_assignments must be "database" (with mj-zana/database); or register a ' . RoleAssignmentStoreInterface::class . '.');
+        }
+        $connection = $resolver->get(ConnectionInterface::class);
+        assert($connection instanceof ConnectionInterface);
+
+        return new DatabaseRoleAssignmentStore($connection, $config->string('security.role_assignments_table', DatabaseRoleAssignmentStore::TABLE));
     }
 
     /**

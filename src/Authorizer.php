@@ -5,11 +5,21 @@ declare(strict_types=1);
 namespace Zana\Security;
 
 use Zana\Http\Exception\ForbiddenHttpException;
+use Zana\Security\RoleAssignment\HasAuthorizationScope;
+use Zana\Security\RoleAssignment\RoleAssignmentStoreInterface;
+use Zana\Security\RoleAssignment\Scope;
+use Zana\Security\RoleAssignment\ScopeHierarchyInterface;
 
 /**
  * Grants permissions: policies first (the first non-null decision wins),
  * then the user's roles, expanded through the role hierarchy. The
  * permission "*" grants everything.
+ *
+ * With a role assignment store (2.17), the user's roles also include those
+ * assigned to them everywhere, and those assigned in the subject's scope and
+ * its parents: the subject is a Scope, or HasAuthorizationScope.
+ *
+ *     $authorizer->can($user, 'tickets.scan', new Scope('event', $eventId));
  */
 final class Authorizer
 {
@@ -25,6 +35,8 @@ final class Authorizer
         private readonly array $roles = [],
         private readonly array $hierarchy = [],
         private readonly iterable $policies = [],
+        private readonly ?RoleAssignmentStoreInterface $assignments = null,
+        private readonly ?ScopeHierarchyInterface $scopes = null,
     ) {
     }
 
@@ -39,7 +51,7 @@ final class Authorizer
             }
         }
 
-        foreach ($user->roles() as $role) {
+        foreach ($this->rolesOf($user, $subject) as $role) {
             foreach ($this->expand($role) as $granted) {
                 $permissions = $this->roles[$granted] ?? [];
                 if (in_array('*', $permissions, true) || in_array($permission, $permissions, true)) {
@@ -59,6 +71,52 @@ final class Authorizer
         if (!$this->can($user, $permission, $subject)) {
             throw new ForbiddenHttpException();
         }
+    }
+
+    /**
+     * The user's own roles, and those assigned to them everywhere or in the
+     * subject's scope and its parents.
+     *
+     * @return list<string>
+     */
+    public function rolesOf(UserInterface $user, ?object $subject = null): array
+    {
+        $roles = $user->roles();
+        if ($this->assignments !== null) {
+            array_push($roles, ...$this->assignments->rolesFor($user->identifier(), $this->scopesOf($subject)));
+        }
+
+        return array_values(array_unique($roles));
+    }
+
+    /**
+     * The subject's scope and every scope that contains it.
+     *
+     * @return list<Scope>
+     */
+    public function scopesOf(?object $subject): array
+    {
+        $scope = match (true) {
+            $subject instanceof Scope => $subject,
+            $subject instanceof HasAuthorizationScope => $subject->authorizationScope(),
+            default => null,
+        };
+        if ($scope === null) {
+            return [];
+        }
+
+        $found = [];
+        $pending = [$scope];
+        while ($pending !== [] && count($found) < 64) {
+            $current = array_shift($pending);
+            if (isset($found[(string) $current])) {
+                continue;
+            }
+            $found[(string) $current] = $current;
+            array_push($pending, ...($this->scopes?->parentsOf($current) ?? []));
+        }
+
+        return array_values($found);
     }
 
     /**

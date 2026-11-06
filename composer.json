@@ -12,6 +12,7 @@
         "psr/simple-cache": "^3.0"
     },
     "require-dev": {
+        "mj-zana/database": "^2.12",
         "mj-zana/events": "^2.0",
         "mj-zana/routing": "^2.0",
         "mj-zana/session": "^2.2",
@@ -19,7 +20,8 @@
         "phpunit/phpunit": "^11.5"
     },
     "suggest": {
-        "mj-zana/session": "For session login: SessionLogin and SessionAuthenticationMiddleware"
+        "mj-zana/session": "For session login: SessionLogin and SessionAuthenticationMiddleware",
+        "mj-zana/database": "For role assignments in a table: DatabaseRoleAssignmentStore (2.17)"
     },
     "autoload": {
         "psr-4": {
@@ -37,6 +39,8 @@
         { "type": "path", "url": "../zana-configuration", "options": { "symlink": true, "versions": { "mj-zana/configuration": "2.14.0" } } },
         { "type": "path", "url": "../zana-core", "options": { "symlink": true, "versions": { "mj-zana/core": "2.14.0" } } },
         { "type": "path", "url": "../zana-ddd", "options": { "symlink": true, "versions": { "mj-zana/ddd": "2.14.0" } } },
+        { "type": "path", "url": "../zana-database", "options": { "symlink": true, "versions": { "mj-zana/database": "2.14.0" } } },
+        { "type": "path", "url": "../zana-console", "options": { "symlink": true, "versions": { "mj-zana/console": "2.14.0" } } },
         { "type": "path", "url": "../zana-events", "options": { "symlink": true, "versions": { "mj-zana/events": "2.14.0" } } },
         { "type": "path", "url": "../zana-http", "options": { "symlink": true, "versions": { "mj-zana/http": "2.14.0" } } },
         { "type": "path", "url": "../zana-routing", "options": { "symlink": true, "versions": { "mj-zana/routing": "2.14.0" } } },

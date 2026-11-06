@@ -3,6 +3,29 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.17.0 — Unreleased
+
+### Added
+
+- Roles in a scope (FE-57, ADR-032):
+  - `Scope` and `RoleAssignmentStoreInterface`, with `DatabaseRoleAssignmentStore` (with
+    mj-zana/database, `security.role_assignments: database`), `RoleAssignmentsMigration` and
+    `InMemoryRoleAssignmentStore`;
+  - `RoleAssignments` (scoped) and its events, `RoleAssigned` and `RoleRevoked`, which name who made
+    the change.
+- The `Authorizer` counts the roles assigned everywhere, and those in the subject's scope and its
+  parents:
+  - the subject is a `Scope` or `HasAuthorizationScope`;
+  - parents come from a registered `ScopeHierarchyInterface`;
+  - `rolesOf()` and `scopesOf()` are public.
+- `#[RequiresPermission(permission, scope:, parameter:)]` checks the permission in the scope named by
+  a route parameter.
+- The `security.role_assignments` check.
+
+### Changed
+
+- `mj-zana/database` is an optional dependency (`suggest`); without a store, nothing changes.
+
 ## 2.16.0 — 2026-11-06
 
 ### Added

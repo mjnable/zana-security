@@ -176,6 +176,44 @@ A code expires (10 minutes by default) and works once. It is refused after 5
 wrong tries, and issuing is rate-limited (`security.one_time_codes.max_issues`
 per `security.one_time_codes.window`). Codes are kept in the PSR-16 cache.
 
+## New in 2.17: roles in an organization or at an event
+
+A user can be the owner of one organization, a box-office agent at another,
+and a scanner at one event only. Give roles in a scope with
+`RoleAssignments`:
+
+```php
+$roles->assign($userId, 'owner', new Scope('organization', $orgId));
+$roles->assign($userId, 'scanner', new Scope('event', $eventId));
+$roles->assign($userId, 'admin');                          // everywhere
+```
+
+The `Authorizer` counts the roles given in the subject's scope, and in the
+scopes above it, beside the user's own `roles()`:
+
+```php
+$authorizer->can($user, 'tickets.scan', new Scope('event', $eventId));
+$authorizer->can($user, 'events.publish', $event);   // $event implements HasAuthorizationScope
+```
+
+```php
+#[RequiresPermission('tickets.scan', scope: 'event')]   // the id from the route parameter {eventId}
+```
+
+- **Storage:** set `security.role_assignments` to `"database"` (with
+  `mj-zana/database`). Add a migration that returns
+  `new RoleAssignmentsMigration()`. Or register your own
+  `RoleAssignmentStoreInterface`, as a singleton.
+- **Parents:** register a `ScopeHierarchyInterface` to say that an event
+  belongs to an organization, so the organization's owner has their roles
+  at its events. Roles never flow from an event up to its organization.
+- **Policies** still decide first; the `Scope` is their subject.
+- **Events:** `RoleAssigned` and `RoleRevoked`, with who made the change.
+  `mj-zana/audit` records them.
+- **Check:** `security.role_assignments` reports a store that cannot be read.
+- **Opt-in:** without the setting or a store, nothing changes.
+- **Your queries:** filtering by organization stays in your repositories.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
