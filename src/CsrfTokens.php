@@ -25,9 +25,6 @@ final readonly class CsrfTokens
 
     private const string SUBJECT_PREFIX = 'csrf:';
 
-    /** Subjects of Zana's own tokens, which are never bearer tokens. */
-    private const array INTERNAL_SUBJECTS = ['csrf:', 'reset:', 'device:'];
-
     /** @var Closure(): int */
     private Closure $now;
 
@@ -70,7 +67,8 @@ final readonly class CsrfTokens
 
     /**
      * Whether the token is a valid bearer token signed by this application, and
-     * not one of Zana's CSRF, password reset or device tokens (2.19.1).
+     * not one of Zana's CSRF, password reset, device or preview tokens (2.19.1):
+ * those all have a colon in their subject, so no such subject counts (2.19.2).
      */
     public function isBearerToken(string $token): bool
     {
@@ -79,13 +77,7 @@ final readonly class CsrfTokens
         } catch (InvalidTokenException) {
             return false;
         }
-        foreach (self::INTERNAL_SUBJECTS as $prefix) {
-            if (str_starts_with($subject, $prefix)) {
-                return false;
-            }
-        }
-
-        return true;
+        return !str_contains($subject, ':');
     }
 
     public function issue(string $form = self::DEFAULT_FORM): string

@@ -101,7 +101,7 @@ final class CsrfTest extends TestCase
     public function testAnyOtherAuthorizationHeaderIsCheckedLikeNone(): void
     {
         [$kernel, $tokens] = $this->app();
-        $internal = [$tokens->issue(), $this->signer()->issue('reset:1', 60), $this->signer()->issue('device:1', 60)];
+        $internal = [$tokens->issue(), $this->signer()->issue('reset:1', 60), $this->signer()->issue('device:1', 60), $this->signer()->issue('admin.posts:12', 3600)];   // the last, a back-office preview link
 
         foreach (['x', 'Bearer x', 'Basic YWRhOnNlY3JldA==', ...array_map(static fn (string $t): string => "Bearer {$t}", $internal)] as $header) {
             $this->assertSame(403, $this->post($kernel, '/contact', [], ['Authorization' => $header])->getStatusCode(), $header);

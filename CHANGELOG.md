@@ -3,6 +3,12 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.19.2 — Unreleased
+
+### Security
+
+- `CsrfTokens::isBearerToken()` refuses any subject with a colon, such as a back-office preview link's.
+
 ## 2.19.1 — 2026-11-07
 
 ### Security
