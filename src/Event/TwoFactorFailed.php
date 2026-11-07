@@ -15,6 +15,9 @@ final readonly class TwoFactorFailed implements SecurityEvent
 
     public const string THROTTLED = 'throttled';
 
+    /** The stored second factor cannot be opened with the key (2.19.1). */
+    public const string UNREADABLE = 'unreadable';
+
     public function __construct(
         public string $userId,
         public string $reason = self::INVALID_CODE,

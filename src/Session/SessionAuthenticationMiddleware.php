@@ -12,6 +12,7 @@ use Psr\Http\Server\RequestHandlerInterface;
 use Zana\Http\BasePath;
 use Zana\Http\Exception\UnauthorizedHttpException;
 use Zana\Security\Middleware\AuthenticationMiddleware;
+use Zana\Security\PasswordUserProviderInterface;
 use Zana\Security\SecurityContext;
 use Zana\Security\UserProviderInterface;
 use Zana\Session\SessionContext;
@@ -24,6 +25,9 @@ use Zana\Session\SessionContext;
  * An HTML request that needs a user and has none is redirected to the login
  * page (security.login.path) with ?to=<the requested path>; JSON requests
  * still get 401.
+ *
+ * With the password user provider, a session from before a password change
+ * is signed out, and so is one that remembers no password (2.19.1).
  */
 final readonly class SessionAuthenticationMiddleware implements MiddlewareInterface
 {
@@ -32,6 +36,7 @@ final readonly class SessionAuthenticationMiddleware implements MiddlewareInterf
         private UserProviderInterface $users,
         private SecurityContext $context,
         private ?string $loginPath = null,
+        private ?PasswordUserProviderInterface $passwords = null,
     ) {
     }
 
@@ -41,8 +46,13 @@ final readonly class SessionAuthenticationMiddleware implements MiddlewareInterf
         $id = $session->get(SessionLogin::SESSION_KEY);
         if (is_string($id)) {
             $user = $this->users->findByIdentifier($id);
+            $passwords = $this->passwords ?? ($this->users instanceof PasswordUserProviderInterface ? $this->users : null);
+            if ($user !== null && $passwords !== null && !hash_equals(SessionLogin::passwordFingerprint($passwords->passwordHashFor($user)), (string) $session->get(SessionLogin::PASSWORD_KEY, ''))) {
+                $user = null;   // the password changed since this session signed in
+            }
             if ($user === null) {
-                $session->remove(SessionLogin::SESSION_KEY);   // the account is gone
+                $session->remove(SessionLogin::SESSION_KEY);   // the account is gone, or its password changed
+                $session->remove(SessionLogin::PASSWORD_KEY);
             } else {
                 $this->context->setUser($user);
                 $request = $request->withAttribute(AuthenticationMiddleware::ATTRIBUTE, $user);

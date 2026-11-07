@@ -42,6 +42,24 @@ final readonly class RateLimiter
      */
     public function attempt(string $key, int $max, int $window, string $strategy = 'fixed'): RateLimitResult
     {
+        return $this->count_($key, $max, $window, $strategy, true);
+    }
+
+    /**
+     * Whether an attempt would be allowed, without counting one (2.19.1).
+     *
+     * @param 'fixed'|'sliding' $strategy
+     */
+    public function peek(string $key, int $max, int $window, string $strategy = 'fixed'): RateLimitResult
+    {
+        return $this->count_($key, $max, $window, $strategy, false);
+    }
+
+    /**
+     * @param 'fixed'|'sliding' $strategy
+     */
+    private function count_(string $key, int $max, int $window, string $strategy, bool $record): RateLimitResult
+    {
         if ($max < 1 || $window < 1) {
             throw new \InvalidArgumentException('A rate limit needs max >= 1 and window >= 1.');
         }
@@ -64,6 +82,9 @@ final readonly class RateLimiter
             return new RateLimitResult(false, $max, 0, $resetAfter);
         }
 
+        if (!$record) {
+            return new RateLimitResult(true, $max, max(0, $max - $weighted), $resetAfter);
+        }
         $this->cache->set($currentKey, $count + 1, $window * 2);
 
         return new RateLimitResult(true, $max, max(0, $max - $weighted - 1), $resetAfter);

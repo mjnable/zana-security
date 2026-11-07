@@ -25,6 +25,9 @@ final readonly class CsrfTokens
 
     private const string SUBJECT_PREFIX = 'csrf:';
 
+    /** Subjects of Zana's own tokens, which are never bearer tokens. */
+    private const array INTERNAL_SUBJECTS = ['csrf:', 'reset:', 'device:'];
+
     /** @var Closure(): int */
     private Closure $now;
 
@@ -63,6 +66,26 @@ final readonly class CsrfTokens
         }
 
         return ($this->now)() - $issuedAt < $this->minimumAge;
+    }
+
+    /**
+     * Whether the token is a valid bearer token signed by this application, and
+     * not one of Zana's CSRF, password reset or device tokens (2.19.1).
+     */
+    public function isBearerToken(string $token): bool
+    {
+        try {
+            $subject = $this->signer->verify($token)->subject;
+        } catch (InvalidTokenException) {
+            return false;
+        }
+        foreach (self::INTERNAL_SUBJECTS as $prefix) {
+            if (str_starts_with($subject, $prefix)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public function issue(string $form = self::DEFAULT_FORM): string

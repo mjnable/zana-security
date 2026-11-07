@@ -94,8 +94,18 @@ final class CsrfTest extends TestCase
         [$kernel] = $this->app();
 
         $this->assertSame(200, $kernel->handle(new ServerRequest('GET', 'https://shop.example/contact'))->getStatusCode());
-        $this->assertSame(200, $this->post($kernel, '/contact', [], ['Authorization' => 'Bearer x'])->getStatusCode());
+        $this->assertSame(200, $this->post($kernel, '/contact', [], ['Authorization' => 'Bearer ' . $this->signer()->issue('42', 60)])->getStatusCode());
         $this->assertSame(200, $this->post($kernel, '/webhook', [])->getStatusCode());
+    }
+
+    public function testAnyOtherAuthorizationHeaderIsCheckedLikeNone(): void
+    {
+        [$kernel, $tokens] = $this->app();
+        $internal = [$tokens->issue(), $this->signer()->issue('reset:1', 60), $this->signer()->issue('device:1', 60)];
+
+        foreach (['x', 'Bearer x', 'Basic YWRhOnNlY3JldA==', ...array_map(static fn (string $t): string => "Bearer {$t}", $internal)] as $header) {
+            $this->assertSame(403, $this->post($kernel, '/contact', [], ['Authorization' => $header])->getStatusCode(), $header);
+        }
     }
 
     /**

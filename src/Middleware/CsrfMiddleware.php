@@ -23,8 +23,9 @@ use Zana\Security\Internal\HandlerReflection;
  * 3. the token from the "_token" field or the X-CSRF-Token header must be
  *    valid for the form named by the "_form" field ("default" otherwise).
  *
- * Requests with an Authorization header are not checked: token-authenticated
- * APIs are not exposed to CSRF. Handlers marked #[WithoutCsrf] are skipped
+ * Requests with a valid bearer token are not checked: token-authenticated
+ * APIs are not exposed to CSRF. Any other Authorization header is checked
+ * like a request without one (2.19.1). Handlers marked #[WithoutCsrf] are skipped
  * when the middleware runs as route middleware.
  *
  * Anti-spam (FE-22): a filled honeypot field, or a form posted sooner than
@@ -44,7 +45,7 @@ final readonly class CsrfMiddleware implements MiddlewareInterface
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
         if (!in_array(strtoupper($request->getMethod()), self::UNSAFE_METHODS, true)
-            || $request->hasHeader('Authorization')
+            || $this->hasBearerToken($request)
             || HandlerReflection::has($request->getAttribute('_handler'), WithoutCsrf::class)
         ) {
             return $handler->handle($request);
@@ -79,5 +80,10 @@ final readonly class CsrfMiddleware implements MiddlewareInterface
         }
 
         return $handler->handle($request);
+    }
+
+    private function hasBearerToken(ServerRequestInterface $request): bool
+    {
+        return preg_match('/^Bearer\s+(\S+)$/i', trim($request->getHeaderLine('Authorization')), $match) === 1 && $this->tokens->isBearerToken($match[1]);
     }
 }

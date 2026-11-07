@@ -31,6 +31,9 @@ use Zana\Security\UserInterface;
  * - Recovery codes are stored as HMACs, and each works once.
  * - Attempts are limited per user (security.two_factor.max_attempts per
  *   security.two_factor.window seconds).
+ * - A state that cannot be opened, because the key changed or the state was
+ *   damaged, still counts as a second factor, and no code passes it: the
+ *   sign-in fails closed (2.19.1).
  */
 final readonly class TwoFactor
 {
@@ -66,7 +69,7 @@ final readonly class TwoFactor
     public function enrol(UserInterface $user, ?string $account = null): Enrolment
     {
         if ($this->enabled($user)) {
-            throw new SecurityException('This user already has a second factor; disable it before enrolling again.');
+            throw new SecurityException('This user already has a second factor, or one that cannot be read with this key; disable it before enrolling again.');
         }
         $secret = $this->totp->generateSecret();
         $codes = self::newRecoveryCodes();
@@ -96,6 +99,10 @@ final readonly class TwoFactor
 
     public function enabled(UserInterface $user): bool
     {
+        if ($this->unreadable($user)) {
+            return true;
+        }
+
         return $this->state($user)?->confirmed === true;
     }
 
@@ -113,6 +120,11 @@ final readonly class TwoFactor
             throw new TooManyRequestsHttpException($limit->resetAfter, 'Too many attempts. Please wait and try again.');
         }
 
+        if ($this->unreadable($user)) {
+            $this->events?->dispatch(new TwoFactorFailed($user->identifier(), TwoFactorFailed::UNREADABLE, $clientIp));
+
+            return false;
+        }
         $state = $this->state($user);
         if ($state === null || !$state->confirmed) {
             return false;
@@ -192,6 +204,16 @@ final readonly class TwoFactor
         }
 
         return $claims->subject === self::DEVICE_PREFIX . $user->identifier() && hash_equals($state->fingerprint(), (string) $claims->claim('f'));
+    }
+
+    /**
+     * A state is stored, but this key cannot open it: the key changed, or the state was damaged.
+     */
+    private function unreadable(UserInterface $user): bool
+    {
+        $sealed = $this->users->twoFactorStateFor($user);
+
+        return $sealed !== null && Internal\State::open($this->box, $sealed) === null;
     }
 
     private function state(UserInterface $user): ?Internal\State

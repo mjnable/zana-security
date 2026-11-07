@@ -215,7 +215,9 @@ final class SecurityServiceProvider extends ServiceProvider
                     $context = $r->get(SecurityContext::class);
                     assert($sessions instanceof SessionContext && $users instanceof UserProviderInterface && $context instanceof SecurityContext);
 
-                    return new SessionAuthenticationMiddleware($sessions, $users, $context, $config->has('security.login.path') ? $config->string('security.login.path') : null);
+                    $passwords = $r->has(PasswordUserProviderInterface::class) ? $r->get(PasswordUserProviderInterface::class) : null;
+
+                    return new SessionAuthenticationMiddleware($sessions, $users, $context, $config->has('security.login.path') ? $config->string('security.login.path') : null, $passwords instanceof PasswordUserProviderInterface ? $passwords : null);
                 })->uses(ConfigurationInterface::class, SessionContext::class, UserProviderInterface::class, PasswordUserProviderInterface::class, SecurityContext::class);
         }
     }

@@ -36,6 +36,11 @@ use Zana\Session\SessionInterface;
  *   session holds a pending sign-in for 5 minutes, until a code completes it,
  *   unless the device was remembered.
  * - The session gets a new id at each step, against session fixation.
+ * - The session remembers a fingerprint of the password hash, so a password
+ *   change signs out every other session (2.19.1).
+ * - The address limit counts failed attempts only, so a sign-in to one's own
+ *   account does not reset it, and it applies only when an address is given
+ *   (2.19.1).
  * - Passwords hashed with old settings are rehashed when the provider
  *   implements PasswordUpgraderInterface.
  * - With an event dispatcher, it dispatches SignInSucceeded, SignInFailed
@@ -46,6 +51,8 @@ final class SessionLogin
     public const string SESSION_KEY = '_security.user';
 
     public const string PENDING_KEY = '_security.two_factor.user';
+
+    public const string PASSWORD_KEY = '_security.password';
 
     private const string PENDING_AT_KEY = '_security.two_factor.at';
 
@@ -91,9 +98,13 @@ final class SessionLogin
     public function start(string $login, #[\SensitiveParameter] string $password, string $clientIp = '', ?string $deviceToken = null): LoginResult
     {
         $this->session->remove(self::PENDING_KEY);
-        $keys = ['login:' . strtolower(trim($login)), 'login-ip:' . $clientIp];
-        foreach ($keys as $key) {
-            $result = $this->limiter?->attempt($key, $this->maxAttempts, $this->window);
+        $loginKey = 'login:' . strtolower(trim($login));
+        $addressKey = $clientIp === '' ? null : 'login-ip:' . $clientIp;
+        $results = [
+            $addressKey === null ? null : $this->limiter?->peek($addressKey, $this->maxAttempts, $this->window),
+            $this->limiter?->attempt($loginKey, $this->maxAttempts, $this->window),
+        ];
+        foreach ($results as $result) {
             if ($result !== null && !$result->allowed) {
                 $this->events?->dispatch(new SignInFailed($login, SignInFailed::THROTTLED, $clientIp));
                 throw new TooManyRequestsHttpException($result->resetAfter, 'Too many sign-in attempts. Please wait and try again.');
@@ -105,14 +116,15 @@ final class SessionLogin
         // Verify against a dummy hash for unknown users, so the timing does not reveal them.
         $valid = $this->hasher->verify($password, $hash ?? self::dummyHash($this->hasher)) && $hash !== null;
         if (!$valid) {
+            if ($addressKey !== null) {
+                $this->limiter?->attempt($addressKey, $this->maxAttempts, $this->window);
+            }
             $this->events?->dispatch(new SignInFailed($login, SignInFailed::INVALID_CREDENTIALS, $clientIp));
 
             return new LoginResult(LoginResult::FAILED);
         }
 
-        foreach ($keys as $key) {
-            $this->limiter?->reset($key, $this->window);
-        }
+        $this->limiter?->reset($loginKey, $this->window);
         if ($this->users instanceof PasswordUpgraderInterface && $this->hasher->needsRehash($hash)) {
             $this->users->upgradePassword($user, $this->hasher->hash($password));
         }
@@ -177,6 +189,7 @@ final class SessionLogin
         $this->session->remove(self::PENDING_AT_KEY);
         $this->session->regenerate();
         $this->session->set(self::SESSION_KEY, $user->identifier());
+        $this->session->set(self::PASSWORD_KEY, self::passwordFingerprint($this->users->passwordHashFor($user)));
         $this->context->setUser($user);
         $this->events?->dispatch(new SignInSucceeded($user->identifier(), $clientIp, $method));
 
@@ -203,6 +216,15 @@ final class SessionLogin
     private function now(): int
     {
         return $this->clock === null ? time() : ($this->clock)();
+    }
+
+    /**
+     * What the session remembers of the password: it changes with the hash, so
+     * SessionAuthenticationMiddleware signs out sessions from before a change.
+     */
+    public static function passwordFingerprint(?string $hash): string
+    {
+        return hash('sha256', 'zana.session.password|' . ($hash ?? ''));
     }
 
     private static function dummyHash(PasswordHasher $hasher): string

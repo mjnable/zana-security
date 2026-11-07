@@ -3,6 +3,23 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.19.1 — Unreleased
+
+### Security
+
+- A stored second factor that cannot be opened, because `security.two_factor.key` changed or the state was
+  damaged, now counts as a second factor that no code passes. Before, it counted as none, and the password alone
+  signed in. `TwoFactorFailed` has a new reason, `unreadable`.
+- `SessionLogin` stores a fingerprint of the password hash in the session, and `SessionAuthenticationMiddleware`
+  signs out a session from before a password change. Sessions from 2.19.0 and earlier have no fingerprint, so
+  everyone signs in again once after upgrading.
+- `CsrfMiddleware` skips its checks only for a valid bearer token signed by the application. Any other
+  `Authorization` header is checked like a request without one, so it no longer bypasses the honeypot and the time
+  trap.
+- The sign-in limit per address counts failed attempts only, so a successful sign-in no longer resets it, and it
+  applies only when an address is given, so callers that pass none no longer share one limit.
+- Added `RateLimiter::peek()` and `CsrfTokens::isBearerToken()`.
+
 ## 2.17.0 — 2026-11-06
 
 ### Added

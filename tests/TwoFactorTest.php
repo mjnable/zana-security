@@ -168,15 +168,36 @@ final class TwoFactorTest extends TestCase
         $twoFactor->verify($user, $this->code($secret));
     }
 
-    public function testAStateSealedUnderAnotherKeyOrTamperedWithIsNoSecondFactor(): void
+    public function testAStateThatCannotBeOpenedFailsClosed(): void
     {
         $twoFactor = $this->twoFactor();
         $user = new BackOfficeUser();
-        $twoFactor->confirm($user, $this->code($twoFactor->enrol($user)->secret));
+        $secret = $twoFactor->enrol($user)->secret;
+        $twoFactor->confirm($user, $this->code($secret));
+        $this->now += 30;
+        $otherKey = $this->twoFactor(key: str_repeat('z', 40));
 
-        $this->assertFalse($this->twoFactor(key: str_repeat('z', 40))->enabled($user));
+        $this->assertTrue($otherKey->enabled($user), 'a changed key must not turn the second factor off');
+        $this->assertFalse($otherKey->verify($user, $this->code($secret)), 'and no code passes it');
+        $last = end($this->events);
+        $this->assertInstanceOf(TwoFactorFailed::class, $last);
+        $this->assertSame(TwoFactorFailed::UNREADABLE, $last->reason);
+        [$login, $session] = $this->login($otherKey);
+        $this->assertSame(LoginResult::SECOND_FACTOR_REQUIRED, $login->start('ada@example.com', 'secret-pass')->status, 'the password alone does not sign in');
+        $this->assertFalse($session->has(SessionLogin::SESSION_KEY));
+        $this->assertFalse($login->completeSecondFactor($this->code($secret))->signedIn());
+
         $this->users->state = substr((string) $this->users->state, 0, -2) . 'AA';
-        $this->assertFalse($twoFactor->enabled($user));
+        $this->assertTrue($twoFactor->enabled($user), 'a damaged state neither');
+        $this->assertFalse($twoFactor->verify($user, $this->code($secret)));
+        try {
+            $twoFactor->enrol($user);
+            $this->fail('An unreadable second factor must not be replaced by a new enrolment.');
+        } catch (SecurityException $e) {
+            $this->assertStringContainsString('cannot be read', $e->getMessage());
+        }
+        $twoFactor->disable($user);
+        $this->assertFalse($twoFactor->enabled($user), 'an administrator can still disable it');
 
         $this->expectException(SecurityException::class);
         $this->expectExceptionMessage('security.two_factor.key must be at least 32 characters');

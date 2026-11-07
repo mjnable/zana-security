@@ -138,6 +138,66 @@ final class WebsiteSecurityTest extends TestCase
         $login->attempt('ada@example.com', 'secret-pass', '198.51.100.1');
     }
 
+    public function testAPasswordChangeSignsOutOtherSessions(): void
+    {
+        $hasher = new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT);
+        $users = new LoginUsers($hasher->hash('secret-pass'));
+        $stolen = new Session();
+        (new SessionLogin($users, $hasher, $stolen, new SecurityContext()))->attempt('ada@example.com', 'secret-pass');
+        $this->assertSame('1', $this->sessionUser($users, $stolen->all()), 'signed in before the change');
+
+        $users->hash = $hasher->hash('a new password');
+
+        $this->assertNull($this->sessionUser($users, $stolen->all()), 'signed out after it');
+        $this->assertNull($this->sessionUser($users, [SessionLogin::SESSION_KEY => '1']), 'and so is a session that remembers no password');
+    }
+
+    public function testOwnSignInsDoNotResetTheAddressLimit(): void
+    {
+        $hasher = new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT);
+        $users = new LoginUsers($hasher->hash('secret-pass'));
+        $login = new SessionLogin($users, $hasher, new Session(), new SecurityContext(), new RateLimiter(new ArrayCache()));
+
+        $guesses = 0;
+        try {
+            foreach (range(1, 40) as $i) {
+                if ($i % 4 === 0) {
+                    $login->attempt('ada@example.com', 'secret-pass', '203.0.113.9');   // the attacker's own account
+                }
+                $login->attempt("victim{$i}@example.com", 'guess', '203.0.113.9');
+                $guesses++;
+            }
+        } catch (TooManyRequestsHttpException) {
+        }
+
+        $this->assertSame(5, $guesses);
+    }
+
+    public function testWithoutAnAddressNobodyIsLockedOutByOthers(): void
+    {
+        $hasher = new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT);
+        $login = new SessionLogin(new LoginUsers($hasher->hash('secret-pass')), $hasher, new Session(), new SecurityContext(), new RateLimiter(new ArrayCache()));
+
+        foreach (range(1, 8) as $i) {
+            $this->assertNull($login->attempt("nobody{$i}@example.com", 'x'));
+        }
+
+        $this->assertNotNull($login->attempt('ada@example.com', 'secret-pass'), 'the per-login limit still applies, but not a shared one');
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function sessionUser(LoginUsers $users, array $data): ?string
+    {
+        $sessions = new SessionContext();
+        $sessions->set(new Session(str_repeat('b', 64), $data));
+        $context = new SecurityContext();
+        (new SessionAuthenticationMiddleware($sessions, $users, $context))->process(new ServerRequest('GET', '/admin'), new PassThrough());
+
+        return $context->user()?->identifier();
+    }
+
     public function testOldHashesAreUpgradedAtLogin(): void
     {
         $users = new LoginUsers((new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT))->hash('secret-pass'));
@@ -152,7 +212,7 @@ final class WebsiteSecurityTest extends TestCase
     {
         $users = new LoginUsers((new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT))->hash('secret-pass'));
         $sessions = new SessionContext();
-        $sessions->set(new Session(str_repeat('a', 64), [SessionLogin::SESSION_KEY => '1']));
+        $sessions->set(new Session(str_repeat('a', 64), [SessionLogin::SESSION_KEY => '1', SessionLogin::PASSWORD_KEY => SessionLogin::passwordFingerprint($users->hash)]));
         $context = new SecurityContext();
 
         $middleware = new SessionAuthenticationMiddleware($sessions, $users, $context, '/login');
