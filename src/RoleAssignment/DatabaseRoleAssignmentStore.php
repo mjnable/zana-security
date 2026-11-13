@@ -24,10 +24,11 @@ final readonly class DatabaseRoleAssignmentStore implements RoleAssignmentStoreI
 
     public function rolesFor(string $userId, array $scopes = []): array
     {
-        $wanted = array_map('strval', $scopes);
         $roles = [];
         foreach ($this->assignmentsFor($userId) as $assignment) {
-            if ($assignment->scope === null || in_array((string) $assignment->scope, $wanted, true)) {
+            $scope = $assignment->scope;
+            // Type and id apart, not as one "type:id" string, which a colon could make ambiguous (2.20, S32).
+            if ($scope === null || array_filter($scopes, static fn (Scope $wanted): bool => $wanted->equals($scope)) !== []) {
                 $roles[$assignment->role] = true;
             }
         }

@@ -3,6 +3,13 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.20.0 — Unreleased
+
+### Security
+
+- `DatabaseRoleAssignmentStore` compares a scope by type and id, not as one `type:id` string, as the in-memory store
+  already did (S32).
+
 ## 2.19.2 — 2026-11-07
 
 ### Security

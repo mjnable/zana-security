@@ -133,6 +133,16 @@ final class RoleAssignmentTest extends TestCase
         $this->assertSame(['owner'], $store->rolesFor('7', [new Scope('organization', '1')]));
     }
 
+    #[DataProvider('drivers')]
+    public function testScopesAreComparedByTypeAndIdNotAsOneString(string $driver): void
+    {
+        $store = $this->store($driver);
+        $store->assign('7', 'owner', new Scope('venue', 'hall:a'));   // "venue:hall:a"
+
+        $this->assertSame([], $store->rolesFor('7', [new Scope('venue:hall', 'a')]), 'the same string, another scope (S32)');
+        $this->assertSame(['owner'], $store->rolesFor('7', [new Scope('venue', 'hall:a')]));
+    }
+
     public function testTheAuthorizerCountsRolesWhereTheSubjectIsAndAbove(): void
     {
         $store = new InMemoryRoleAssignmentStore();
