@@ -35,7 +35,7 @@ final class SecurityEventsTest extends TestCase
     public function testSignInsAndSignOutsAreDispatched(): void
     {
         $hasher = new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT);
-        $login = new SessionLogin(new LoginUsers($hasher->hash('secret-pass')), $hasher, new Session(), new SecurityContext(), new RateLimiter(new ArrayCache()), maxAttempts: 2, events: $this->dispatcher());
+        $login = new SessionLogin(new LoginUsers($hasher->hash('secret-pass')), $hasher, new Session(), new SecurityContext(), new RateLimiter(new ArrayCache(), static fn (): int => 1_800_000_000), maxAttempts: 2, events: $this->dispatcher());
 
         $this->assertNull($login->attempt('ada@example.com', 'wrong', '198.51.100.7'));
         $this->assertNotNull($login->attempt('ada@example.com', 'secret-pass', '198.51.100.7'));
@@ -53,7 +53,7 @@ final class SecurityEventsTest extends TestCase
     public function testThrottledAttemptsAreDispatchedToo(): void
     {
         $hasher = new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT);
-        $login = new SessionLogin(new LoginUsers($hasher->hash('secret-pass')), $hasher, new Session(), new SecurityContext(), new RateLimiter(new ArrayCache()), maxAttempts: 1, events: $this->dispatcher());
+        $login = new SessionLogin(new LoginUsers($hasher->hash('secret-pass')), $hasher, new Session(), new SecurityContext(), new RateLimiter(new ArrayCache(), static fn (): int => 1_800_000_000), maxAttempts: 1, events: $this->dispatcher());
 
         $login->attempt('nobody@example.com', 'guess', '203.0.113.9');
         try {

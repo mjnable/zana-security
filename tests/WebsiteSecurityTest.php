@@ -156,7 +156,7 @@ final class WebsiteSecurityTest extends TestCase
     {
         $hasher = new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT);
         $users = new LoginUsers($hasher->hash('secret-pass'));
-        $login = new SessionLogin($users, $hasher, new Session(), new SecurityContext(), new RateLimiter(new ArrayCache()));
+        $login = new SessionLogin($users, $hasher, new Session(), new SecurityContext(), new RateLimiter(new ArrayCache(), static fn (): int => 1_800_000_000));
 
         $guesses = 0;
         try {
@@ -176,7 +176,7 @@ final class WebsiteSecurityTest extends TestCase
     public function testWithoutAnAddressNobodyIsLockedOutByOthers(): void
     {
         $hasher = new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT);
-        $login = new SessionLogin(new LoginUsers($hasher->hash('secret-pass')), $hasher, new Session(), new SecurityContext(), new RateLimiter(new ArrayCache()));
+        $login = new SessionLogin(new LoginUsers($hasher->hash('secret-pass')), $hasher, new Session(), new SecurityContext(), new RateLimiter(new ArrayCache(), static fn (): int => 1_800_000_000));
 
         foreach (range(1, 8) as $i) {
             $this->assertNull($login->attempt("nobody{$i}@example.com", 'x'));
