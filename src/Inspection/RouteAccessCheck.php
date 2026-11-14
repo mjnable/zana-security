@@ -98,9 +98,12 @@ final readonly class RouteAccessCheck implements ApplicationCheck
                 $findings[] = new Finding(
                     'security.access_unenforced',
                     $strict,
-                    "{$where} requires a user, but AuthorizationMiddleware is not on the route, so anyone reaches it.",
+                    "{$where} requires a user, but AuthorizationMiddleware is not on the route, so anyone reaches it."
+                        . ($public === null ? '' : ' It also says it is public, which contradicts that.'),
                     self::file($handler),
-                    hint: 'Add AuthorizationMiddleware to the route or its group. Authentication middleware alone lets anonymous requests through.',
+                    hint: $public === null
+                        ? 'Add AuthorizationMiddleware to the route or its group. Authentication middleware alone lets anonymous requests through.'
+                        : 'If anyone may reach it on purpose, such as a preview link checked by its token, move it to a class without #[RequiresAuthentication] or #[RequiresPermission], and keep #[PublicRoute] there. Otherwise add AuthorizationMiddleware.',
                     security: true,
                 );
             }

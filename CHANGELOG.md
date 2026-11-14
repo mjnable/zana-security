@@ -17,7 +17,7 @@ not change this package is not listed.
   - `security.csrf`: a route that changes data with session sign-in, and no `CsrfMiddleware` or `#[WithoutCsrf]`.
 - `security.rate_limit`, always a warning: a public route that changes data without `#[RateLimit]` and
   `RateLimitMiddleware`.
-- Requires mj-zana/routing 2.21 or later when it is installed (`conflict`).
+- Requires mj-zana/core 2.21, and mj-zana/routing 2.21 or later when it is installed (`conflict`).
 
 ## 2.20.0 — 2026-11-14
 

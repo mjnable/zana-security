@@ -58,6 +58,16 @@ final class RouteAccessCheckTest extends TestCase
         $this->assertSame(Severity::Error, $this->findings($routes, strict: true)[0]->severity);
     }
 
+    public function testAPublicMethodOnAClassThatRequiresAUserIsAContradiction(): void
+    {
+        // Found in zanabler: a preview link, checked by its token, on an admin controller that requires a permission.
+        $findings = $this->findings(static fn (Router $r) => $r->get('/preview/{token}', [EditorController::class, 'preview']), strict: true);
+
+        $this->assertSame(['security.access_unenforced GET /preview/{token}'], self::summary($findings));
+        $this->assertStringContainsString('It also says it is public, which contradicts that.', $findings[0]->message);
+        $this->assertStringContainsString('move it to a class without', (string) $findings[0]->hint);
+    }
+
     public function testAnAccessRuleNothingEnforcesIsReported(): void
     {
         // The audit's lesson: an attribute nobody enforces looks safe and is not.
@@ -215,6 +225,16 @@ final class ProtectedController
     public function report(): string
     {
         return 'report';
+    }
+}
+
+#[RequiresPermission('articles.edit')]
+final class EditorController
+{
+    #[PublicRoute(reason: 'A preview link: the signed token is the access')]
+    public function preview(string $token): string
+    {
+        return $token;
     }
 }
 
