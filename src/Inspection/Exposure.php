@@ -9,11 +9,15 @@ use Zana\Routing\Router;
 use Zana\Security\Internal\HandlerReflection;
 
 /**
- * Who may reach each route: the reviewed list of what an application exposes
- * (2.23, FE-68 layer 4, ADR-033). `php bin/console security:exposure` writes
- * it to security/exposure.json, which is committed, so each change is
- * reviewed in a diff; `check` reports a route that is new or whose access
- * changed until the file is written again.
+ * Who may reach each route: the reviewed baseline of what an application
+ * exposes (2.23, FE-68 layer 4, ADR-033), security/exposure.json, committed.
+ * `security:exposure` shows what changed and writes nothing; only --init and
+ * --update record it. `check` compares and never writes, so a change is
+ * approved only by someone recording it, in a commit others review.
+ *
+ * The file is deterministic: routes sorted by path then methods, permissions
+ * sorted, nothing from the environment or the machine (no paths, no dates).
+ * Only what the command writes is accepted as a baseline (asWritten).
  *
  * Each route is read through RouteAccess, as `check` and the attacks of
  * mj-zana/testing read it, and recorded as what it does, not what it says:
@@ -34,17 +38,27 @@ final readonly class Exposure
     /** About 150 bytes a route: room for over 10,000 routes. */
     private const int MAX_BYTES = 2 << 20;
 
-    private const string ABOUT = 'Who may reach each route. Written by php bin/console security:exposure: review each change in the diff, then commit it. check reports a route that is new, or whose access changed, until this file is written again.';
+    private const string ABOUT = 'Who may reach each route, as reviewed. Do not edit it: php bin/console security:exposure shows what changed, and --update records it once reviewed. check reports every route that differs from it.';
 
     private const int FLAGS = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR;
+
+    /** Each access, with its fields: "text" or "list" is required, "text?" optional. */
+    private const array FIELDS = [
+        'public' => ['reason' => 'text'],
+        'user' => ['middleware' => 'text?'],
+        'permission' => ['permissions' => 'list', 'middleware' => 'text?'],
+        'anyone' => ['problem' => 'text'],
+    ];
 
     /**
      * @param array<string, array<string, string|list<string>>> $routes By "METHODS /path", sorted by path
      * @param array<string, string|null> $locations Where each route's handler is written, for a finding
+     * @param bool $asWritten Read from a file exactly as security:exposure writes it (no hand edit)
      */
     private function __construct(
         public array $routes,
         public array $locations = [],
+        public bool $asWritten = true,
     ) {
     }
 
@@ -96,29 +110,65 @@ final readonly class Exposure
         if (!is_array($data) || !is_array($data['routes'] ?? null) || ($data['routes'] !== [] && array_is_list($data['routes']))) {
             throw new \UnexpectedValueException('it has no "routes" object, of each route by its methods and path');
         }
+        if (($data['format'] ?? null) !== self::FORMAT) {
+            throw new \UnexpectedValueException('its "format" is not ' . self::FORMAT . ', the only one this version reads');
+        }
         $routes = [];
         foreach ($data['routes'] as $key => $entry) {
             if (!is_string($key)) {
                 throw new \UnexpectedValueException('the entry ' . $key . ' is not named by its methods and path, such as "GET /about"');
             }
-            if (!is_array($entry) || !is_string($entry['access'] ?? null)) {
-                throw new \UnexpectedValueException('the entry ' . json_encode($key, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . ' has no "access"');
-            }
-            $clean = [];
-            foreach ($entry as $field => $value) {
-                if (is_string($field) && is_string($value)) {
-                    $clean[$field] = $value;
-                } elseif (is_string($field) && is_array($value) && array_is_list($value) && array_filter($value, is_string(...)) === $value) {
-                    $clean[$field] = self::sortedList($value);
-                } else {
-                    throw new \UnexpectedValueException('the entry ' . json_encode($key, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . ' has a field that is neither text nor a list of text');
-                }
-            }
-            ksort($clean);
-            $routes[$key] = $clean;
+            $routes[$key] = self::validEntry(json_encode($key, self::FLAGS), $entry);
         }
+        $exposure = new self(self::sorted($routes));
 
-        return new self(self::sorted($routes));
+        // Exactly as security:exposure writes it, but for what Git and editors change: a byte order mark, CRLF line ends.
+        $written = str_replace("\r\n", "\n", $raw) === $exposure->encode();
+
+        return new self($exposure->routes, [], $written);
+    }
+
+    /**
+     * One recorded entry, which must be one security:exposure writes: a known
+     * access, with the fields it needs and no other.
+     *
+     * @return array<string, string|list<string>>
+     */
+    private static function validEntry(string $name, mixed $entry): array
+    {
+        if (!is_array($entry) || !is_string($entry['access'] ?? null)) {
+            throw new \UnexpectedValueException("the entry {$name} has no \"access\"");
+        }
+        $fields = self::FIELDS[$entry['access']] ?? null;
+        if ($fields === null) {
+            throw new \UnexpectedValueException("the entry {$name} has the access \"{$entry['access']}\", which is none of " . implode(', ', array_keys(self::FIELDS)));
+        }
+        $clean = [];
+        foreach ($entry as $field => $value) {
+            if ($field === 'access') {
+                $clean['access'] = $entry['access'];
+            } elseif (!is_string($field) || !array_key_exists($field, $fields)) {
+                throw new \UnexpectedValueException("the entry {$name} has a field " . json_encode($field, self::FLAGS) . " that \"{$entry['access']}\" does not have");
+            } elseif ($fields[$field] === 'list') {
+                if (!is_array($value) || $value === [] || !array_is_list($value) || array_filter($value, static fn (mixed $v): bool => is_string($v) && trim($v) !== '') !== $value) {
+                    throw new \UnexpectedValueException("the entry {$name} has \"{$field}\" that is not a list of names");
+                }
+                $clean[$field] = self::sortedList($value);
+            } else {
+                if (!is_string($value) || trim($value) === '') {
+                    throw new \UnexpectedValueException("the entry {$name} has \"{$field}\" that is not text");
+                }
+                $clean[$field] = $value;
+            }
+        }
+        foreach ($fields as $field => $kind) {
+            if (!str_ends_with($kind, '?') && !isset($clean[$field])) {
+                throw new \UnexpectedValueException("the entry {$name} is \"{$entry['access']}\" without its \"{$field}\"");
+            }
+        }
+        ksort($clean);
+
+        return $clean;
     }
 
     /**

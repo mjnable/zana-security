@@ -7,17 +7,24 @@ not change this package is not listed.
 
 ### Added
 
-- The reviewed list of what an application exposes (FE-68, layer 4 of ADR-033): `php bin/console security:exposure`
-  writes `security/exposure.json`, who may reach each route, one line a route, and says what changed since it was last
-  written. Each route is recorded as what it does, read through `RouteAccess` as `check` and the attacks read it:
-  `public` with its reason, `user`, `permission` with the permissions, the application's sign-in middleware when that
-  is what counts, and `anyone` with the problem, for a route that says nothing or whose rule nothing enforces.
-- The `security.exposure` check: a route that is new, or whose access changed since the file was written, is an error
-  with `security.strict`, a warning otherwise, until someone reviews it and writes the file again; `release:build`
-  refuses to build on it in strict mode. A route that is gone is a warning. Without the file, a warning, in strict mode
-  too, so a project that upgrades fails nothing. A file that is not such a list, or larger than 2 MB, is an error in
-  strict mode; one saved with a byte order mark, with CRLF line endings, or reordered is read as written.
-- `security:exposure` needs mj-zana/console, now suggested.
+- The reviewed baseline of what an application exposes (FE-68, layer 4 of ADR-033), `security/exposure.json`: who
+  may reach each route, one line a route. Each route is recorded as what it does, read through `RouteAccess` as
+  `check` and the attacks read it: `public` with its reason, `user`, `permission` with the permissions, the
+  application's sign-in middleware when that is what counts, and `anyone` with the problem, for a route that says
+  nothing or whose rule nothing enforces, kept apart from a declared public route. The file is deterministic: routes
+  sorted by path then methods, permissions sorted, nothing from the environment or the machine.
+- `php bin/console security:exposure` shows who may reach each route against the baseline, and writes nothing: it exits
+  with 1 while anything differs, so running it again never approves a change. Recording is explicit: `--init` writes
+  the first baseline and is refused when one exists; `--update` records the changes into the existing one, listing
+  each, and is refused when the baseline cannot be read. Needs mj-zana/console, now suggested.
+- The `security.exposure` check compares, and never writes: a route that is new, or whose access changed, including
+  a permission changed on a route that stays protected, is an error with `security.strict`, a warning otherwise;
+  `release:build` refuses to build on it in strict mode. A route that is gone is a warning. Without the baseline, a
+  warning, in strict mode too, so a project that upgrades fails nothing.
+- Only a baseline the command writes is accepted: a known access, with the fields it needs and no other, format 1, and
+  exactly the command's layout. A hand edit, a reordering, a route named twice (which could hide an entry), an
+  unknown access or field, or a file over 2 MB is an error in strict mode. A byte order mark and CRLF line endings, as
+  Git and Windows editors write them, are accepted.
 
 ## 2.22.0 — 2026-11-14
 
