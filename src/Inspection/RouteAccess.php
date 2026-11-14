@@ -147,6 +147,16 @@ final readonly class RouteAccess
     }
 
     /**
+     * It says only users may reach it: a Zana access rule, enforced or not, or
+     * the application's declared sign-in middleware. The attacks of
+     * mj-zana/testing test this claim against what the route does.
+     */
+    public function claimsUser(): bool
+    {
+        return $this->requiresUser || $this->application !== null;
+    }
+
+    /**
      * It says who may reach it, one way or another.
      */
     public function declared(): bool
