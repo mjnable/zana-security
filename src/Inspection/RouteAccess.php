@@ -53,6 +53,7 @@ final readonly class RouteAccess
      * @param bool $sessions Session sign-in runs for the route (route or http.middleware)
      * @param bool $csrfProtected CsrfMiddleware runs for the route, and the handler does not opt out
      * @param RateLimit|null $rateLimit The limit enforced on the route: the attribute with RateLimitMiddleware on the route
+     * @param list<string> $permissions The permissions #[RequiresPermission] names on its handler
      */
     private function __construct(
         public Route $route,
@@ -66,6 +67,7 @@ final readonly class RouteAccess
         public bool $withoutCsrf,
         public ?RateLimit $rateLimit,
         public bool $rateLimitDeclared,
+        public array $permissions = [],
     ) {
     }
 
@@ -87,6 +89,12 @@ final readonly class RouteAccess
         $all = [...$httpMiddleware, ...$middleware];
         $withoutCsrf = HandlerReflection::has($handler, WithoutCsrf::class);
         $limit = HandlerReflection::firstAttribute($handler, RateLimit::class);
+        $permissions = [];
+        foreach (HandlerReflection::targets($handler) as $target) {
+            foreach ($target->getAttributes(RequiresPermission::class) as $attribute) {
+                $permissions[] = $attribute->newInstance()->permission;
+            }
+        }
 
         return new self(
             $route,
@@ -100,6 +108,7 @@ final readonly class RouteAccess
             $withoutCsrf,
             $limit !== null && self::has($middleware, RateLimitMiddleware::class) ? $limit : null,
             $limit !== null,
+            array_values(array_unique($permissions)),
         );
     }
 

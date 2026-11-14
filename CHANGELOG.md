@@ -9,7 +9,8 @@ not change this package is not listed.
 
 - `Inspection\RouteAccess`: who may reach one route, as its declarations and middleware say: public with its reason,
   a Zana access rule and whether `AuthorizationMiddleware` enforces it, the application's declared sign-in middleware,
-  session sign-in, CSRF protection and the enforced rate limit; `needsUser()`, `claimsUser()` and `declared()` (FE-68). The security
+  session sign-in, CSRF protection, the enforced rate limit and the permissions it names; `needsUser()`, `claimsUser()` and
+  `declared()` (FE-68). The security
   rules of `check` and the attacks of mj-zana/testing read it, so they judge every route alike.
 
 ## 2.21.0 — 2026-11-14
