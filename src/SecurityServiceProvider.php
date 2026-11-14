@@ -16,6 +16,10 @@ use Zana\Database\ConnectionInterface;
 use Zana\Security\Console\ExposureCommand;
 use Zana\Security\Inspection\ExposureCheck;
 use Zana\Security\Inspection\RoleAssignmentsCheck;
+use Zana\Security\Inspection\SpamRulesCheck;
+use Zana\Security\Middleware\SpamGuardMiddleware;
+use Zana\Security\Spam\SpamGuard;
+use Zana\Security\Spam\SpamRuleInterface;
 use Zana\Security\Inspection\RouteAccessCheck;
 use Zana\Security\Inspection\TwoFactorCheck;
 use Zana\Security\Internal\MissingCache;
@@ -151,6 +155,39 @@ final class SecurityServiceProvider extends ServiceProvider
 
                 return new RateLimitMiddleware($limiter, $context);
             })->uses(RateLimiter::class, SecurityContext::class)
+            // 2.24, FE-63: spam rules per form. Scoped, so an application's rule may use scoped services.
+            ->scoped(SpamGuard::class, static function (ServiceResolverInterface $r): SpamGuard {
+                $config = $r->get(ConfigurationInterface::class);
+                $cache = $r->has(CacheInterface::class) ? $r->get(CacheInterface::class) : null;
+                assert($config instanceof ConfigurationInterface);
+
+                return new SpamGuard(
+                    $config->array('security.spam.forms', []),
+                    $cache instanceof CacheInterface ? $cache : null,
+                    static function (string $class) use ($r): SpamRuleInterface {
+                        $rule = $r->has($class) ? $r->get($class) : new $class();
+                        assert($rule instanceof SpamRuleInterface);
+
+                        return $rule;
+                    },
+                );
+            })->uses(ConfigurationInterface::class, CacheInterface::class)
+            ->scoped(SpamGuardMiddleware::class, static function (ServiceResolverInterface $r): SpamGuardMiddleware {
+                $config = $r->get(ConfigurationInterface::class);
+                $guard = $r->get(SpamGuard::class);
+                $context = $r->get(SecurityContext::class);
+                assert($config instanceof ConfigurationInterface && $guard instanceof SpamGuard && $context instanceof SecurityContext);
+
+                return new SpamGuardMiddleware(
+                    $guard,
+                    $config->has('security.csrf.honeypot') ? $config->string('security.csrf.honeypot') : null,
+                    $config->has('security.csrf.spam_redirect') ? $config->string('security.csrf.spam_redirect') : null,
+                    $context,
+                    self::events($r),
+                );
+            })->uses(ConfigurationInterface::class, SpamGuard::class, SecurityContext::class, EventDispatcherInterface::class)
+            ->singleton(SpamRulesCheck::class)
+            ->tag(ApplicationCheck::TAG, SpamRulesCheck::class)
             // Scoped, so the user provider may be scoped like other repositories (FE-40)
             ->scoped(PasswordResetTokens::class, static function (ServiceResolverInterface $r): PasswordResetTokens {
                 $signer = $r->get(TokenSigner::class);

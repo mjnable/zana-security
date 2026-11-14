@@ -3,6 +3,30 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.24.0 — Unreleased
+
+### Added
+
+- Spam rules per form (FE-63), beside the honeypot and the time trap: `#[SpamRules('contact')]` on the handler that
+  receives a form, `SpamGuardMiddleware` on its route, and the rules in `security.spam.forms.contact`:
+  - `max_links`: more links than that (http(s)://, www., [url], <a>) is spam;
+  - `blocked_terms`: words or phrases found as whole words, whatever their case, spacing or invisible characters;
+  - `duplicate_minutes`: the same text accepted within those minutes, from the same client or, with
+    `duplicate_scope: everyone`, from anyone, however typed, with a fresh token; a hash in the PSR-16 cache, never
+    the text, kept only when the handler answered without an error, so a corrected form goes through;
+  - `rules`: the application's own `SpamRuleInterface` classes; `threshold`, the points that make a post spam;
+    `fields`, the fields read; `redirect`, a path on the site.
+
+  Spam is treated as a filled honeypot: sent to the form's `redirect` or `security.csrf.spam_redirect` with 303, as if
+  it had succeeded, otherwise refused with 403, in the same words. The form is named on the server, never by the
+  request. Each refusal dispatches `SpamRefused`, with the rules that found something and never the text.
+  `FixedScore` makes every post spam, or none, in tests.
+- The `security.spam_rules` check: settings that cannot be used (an unknown setting, a wrong value, a rule that is
+  not one, a redirect off the site, no rule, `duplicate_minutes` without a cache), `#[SpamRules]` with no
+  `SpamGuardMiddleware` on its route, or naming a form without settings: errors with `security.strict`, warnings
+  otherwise. A form without usable settings refuses every post rather than accept them unchecked.
+  `security.global_middleware` now also reports `SpamGuardMiddleware` in `http.middleware`.
+
 ## 2.23.0 — 2026-11-14
 
 ### Added

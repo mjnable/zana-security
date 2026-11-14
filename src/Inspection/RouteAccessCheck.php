@@ -14,6 +14,7 @@ use Zana\Routing\Router;
 use Zana\Security\Internal\HandlerReflection;
 use Zana\Security\Middleware\AuthorizationMiddleware;
 use Zana\Security\Middleware\RateLimitMiddleware;
+use Zana\Security\Middleware\SpamGuardMiddleware;
 
 /**
  * The security rules for routes (2.21, FE-68, ADR-033). Errors with
@@ -26,9 +27,9 @@ use Zana\Security\Middleware\RateLimitMiddleware;
  *   AuthorizationMiddleware is not on the route, so nothing enforces it.
  *   Authentication middleware alone is no protection: it lets anonymous
  *   requests through.
- * - security.global_middleware: AuthorizationMiddleware or
- *   RateLimitMiddleware in http.middleware, where it runs before routing and
- *   so enforces nothing.
+ * - security.global_middleware: AuthorizationMiddleware, RateLimitMiddleware
+ *   or SpamGuardMiddleware (2.24) in http.middleware, where it runs before
+ *   routing and so enforces nothing.
  * - security.csrf: a route that changes data, with session sign-in, and no
  *   CsrfMiddleware (route or global) and no #[WithoutCsrf].
  * - security.rate_limit, always a warning: a public route that changes data
@@ -66,7 +67,7 @@ final readonly class RouteAccessCheck implements ApplicationCheck
         $global = array_values(array_filter($config->array('http.middleware', []), is_string(...)));
         $findings = [];
 
-        foreach ([AuthorizationMiddleware::class => '#[RequiresAuthentication] and #[RequiresPermission]', RateLimitMiddleware::class => '#[RateLimit]'] as $middleware => $what) {
+        foreach ([AuthorizationMiddleware::class => '#[RequiresAuthentication] and #[RequiresPermission]', RateLimitMiddleware::class => '#[RateLimit]', SpamGuardMiddleware::class => '#[SpamRules]'] as $middleware => $what) {
             if (RouteAccess::has($global, $middleware)) {
                 $findings[] = new Finding(
                     'security.global_middleware',
