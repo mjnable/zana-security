@@ -55,7 +55,8 @@ final readonly class SpamGuardMiddleware implements MiddlewareInterface
         $verdict = $this->guard->judge($rules->form, $submission);
         if ($verdict->spam) {
             $ip = $request->getAttribute('client_ip') ?? $request->getServerParams()['REMOTE_ADDR'] ?? '';
-            $this->events?->dispatch(new SpamRefused($rules->form, $verdict->reasons(), $verdict->points, is_string($ip) ? $ip : ''));
+            // recordable(), not reasons(): an application's rule may have put the visitor's text in its reason (2.24.1).
+            $this->events?->dispatch(new SpamRefused($rules->form, $verdict->recordable(), $verdict->points, is_string($ip) ? $ip : ''));
             $redirect = $profile->redirect ?? $this->spamRedirect;
             if ($redirect !== null) {
                 return new Response(303, ['Location' => $redirect]);

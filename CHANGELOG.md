@@ -3,6 +3,20 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.24.1 — Unreleased
+
+### Fixed
+
+- An application's spam rule could put the visitor's text in `SpamRefused`, and so in the audit log, through its
+  reason. `SpamRefused` now records Zana's rules with their reasons (counts, the configured term) and an application's
+  rule by name and points only; a name that does not read as one (`/^[a-z][a-z0-9_.-]{0,39}$/`) is replaced by the
+  rule's class. `Verdict::recordable()` is what may be recorded; `Verdict::reasons()` keeps every reason for the
+  application's own code.
+- A cache that failed after a form post was accepted made the visitor's request fail, though the handler had taken
+  the message. A rule that fails after acceptance is now logged, never thrown. A cache that cannot be read makes the
+  repeat rule find nothing for that post, logged, while the other rules still apply: a real message is not refused
+  because a cache server is down. `SpamGuard` takes the application's PSR-3 logger.
+
 ## 2.24.0 — 2026-11-14
 
 ### Added

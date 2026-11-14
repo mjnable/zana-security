@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Zana\Security;
 
 use Psr\EventDispatcher\EventDispatcherInterface;
+use Psr\Log\LoggerInterface;
 use Psr\SimpleCache\CacheInterface;
 use Zana\Configuration\ConfigurationInterface;
 use Zana\Console\ConsoleKernel;
@@ -170,8 +171,9 @@ final class SecurityServiceProvider extends ServiceProvider
 
                         return $rule;
                     },
+                    logger: $r->has(LoggerInterface::class) && ($logger = $r->get(LoggerInterface::class)) instanceof LoggerInterface ? $logger : null,
                 );
-            })->uses(ConfigurationInterface::class, CacheInterface::class)
+            })->uses(ConfigurationInterface::class, CacheInterface::class, LoggerInterface::class)
             ->scoped(SpamGuardMiddleware::class, static function (ServiceResolverInterface $r): SpamGuardMiddleware {
                 $config = $r->get(ConfigurationInterface::class);
                 $guard = $r->get(SpamGuard::class);

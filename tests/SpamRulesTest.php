@@ -339,6 +339,75 @@ final class SpamRulesTest extends TestCase
         $this->assertSame([303, '/thanks'], [$response->getStatusCode(), $response->getHeaderLine('Location')]);
     }
 
+    // ── 2.24.1: a cache that fails, and no text in what is recorded ─────────
+
+    public function testACacheThatCannotBeWrittenNeverFailsAReceivedMessage(): void
+    {
+        $logger = new SpamLog();
+        $handler = new Answer(303);
+        $middleware = new SpamGuardMiddleware(new SpamGuard(['contact' => ['duplicate_minutes' => 10]], new FailingCache(failReads: false), static fn (string $c): SpamRuleInterface => new $c(), logger: $logger));
+
+        $response = $middleware->process(self::post(['message' => 'Call me on 0812345678']), $handler);
+
+        $this->assertSame(303, $response->getStatusCode(), 'the visitor is told it was received, as it was');
+        $this->assertSame(1, $handler->calls);
+        $this->assertSame(['warning: The spam rule for repeated text could not use the cache, so it found nothing for this post; the other rules still applied.'], $logger->lines);
+        $this->assertSame(['form' => 'contact', 'exception' => \RuntimeException::class], $logger->contexts[0], 'no text, no key');
+    }
+
+    public function testACacheThatCannotBeReadFindsNothingAndTheOtherRulesStillApply(): void
+    {
+        $logger = new SpamLog();
+        $guard = new SpamGuard(['contact' => ['duplicate_minutes' => 10, 'max_links' => 0]], new FailingCache(failReads: true), static fn (string $c): SpamRuleInterface => new $c(), logger: $logger);
+
+        $this->assertFalse($guard->judge('contact', self::sent('Hello'))->spam, 'a real message is not refused because the cache is down');
+        $verdict = $guard->judge('contact', self::sent('https://spam.example'));
+        $this->assertTrue($verdict->spam, 'the links rule still refuses');
+        $this->assertSame(['links: 1 link(s), at most 0'], $verdict->recordable());
+        $this->assertCount(2, $logger->lines, 'each failure is logged');
+    }
+
+    public function testAnApplicationRuleThatFailsAfterAcceptanceIsLoggedNotThrown(): void
+    {
+        $logger = new SpamLog();
+        $handler = new Answer(303);
+        $middleware = new SpamGuardMiddleware(new SpamGuard(['contact' => ['rules' => [BrokenRecorder::class]]], null, static fn (string $c): SpamRuleInterface => new $c(), logger: $logger));
+
+        $this->assertSame(303, $middleware->process(self::post(['message' => 'Hello']), $handler)->getStatusCode());
+        $this->assertSame(['error: A spam rule failed after a form post was accepted; the post was kept.'], $logger->lines);
+        $this->assertSame(['form' => 'contact', 'rule' => BrokenRecorder::class, 'exception' => \LogicException::class], $logger->contexts[0]);
+    }
+
+    public function testAnApplicationRuleIsRecordedByNameAndPointsNeverItsReason(): void
+    {
+        $events = new RecordingDispatcher();
+        $middleware = new SpamGuardMiddleware(new SpamGuard(['contact' => ['rules' => [QuotesTheText::class, NamedByTheText::class], 'blocked_terms' => ['casino'], 'threshold' => 1]], null, static fn (string $c): SpamRuleInterface => new $c()), events: $events);
+
+        try {
+            $middleware->process(self::post(['message' => 'casino 0812345678']), new Answer());
+            self::fail('Spam was accepted.');
+        } catch (ForbiddenHttpException) {
+        }
+
+        $event = $events->events[0];
+        $this->assertInstanceOf(SpamRefused::class, $event);
+        $this->assertSame([
+            'blocked_terms: blocked term(s): casino',      // Zana's: the configured term, as before
+            'quotes: 2 point(s)',                          // its reason quoted the text: not recorded
+            NamedByTheText::class . ': 1 point(s)',        // its name was the text: the class instead
+        ], $event->reasons);
+        $this->assertStringNotContainsString('0812345678', serialize($event));
+        $this->assertSame(4, $event->points, 'the same points and refusal as Zana\'s rules');
+    }
+
+    public function testTheReasonsStayForTheApplicationsOwnUse(): void
+    {
+        $verdict = (new SpamGuard(['contact' => ['rules' => [QuotesTheText::class]]], null, static fn (string $c): SpamRuleInterface => new $c()))->judge('contact', self::sent('hello'));
+
+        $this->assertSame(['quotes: it said: hello'], $verdict->reasons(), 'in memory, for the application');
+        $this->assertSame(['quotes: 2 point(s)'], $verdict->recordable());
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private static function sent(string $text, string $client = 'ip:198.51.100.7'): Submission
@@ -528,5 +597,105 @@ final class SpamCache implements CacheInterface
     public function has(string $key): bool
     {
         return array_key_exists($key, $this->values);
+    }
+}
+
+/** A cache server that is down: reads (optionally) and writes throw. */
+final class FailingCache implements CacheInterface
+{
+    public function __construct(private readonly bool $failReads)
+    {
+    }
+
+    public function get(string $key, mixed $default = null): mixed
+    {
+        return $this->failReads ? throw new \RuntimeException('cache server unreachable') : $default;
+    }
+
+    public function set(string $key, mixed $value, \DateInterval|int|null $ttl = null): bool
+    {
+        throw new \RuntimeException('cache server unreachable');
+    }
+
+    public function delete(string $key): bool
+    {
+        return false;
+    }
+
+    public function clear(): bool
+    {
+        return false;
+    }
+
+    public function getMultiple(iterable $keys, mixed $default = null): iterable
+    {
+        return [];
+    }
+
+    /**
+     * @param iterable<string, mixed> $values
+     */
+    public function setMultiple(iterable $values, \DateInterval|int|null $ttl = null): bool
+    {
+        return false;
+    }
+
+    public function deleteMultiple(iterable $keys): bool
+    {
+        return false;
+    }
+
+    public function has(string $key): bool
+    {
+        return false;
+    }
+}
+
+final class SpamLog extends \Psr\Log\AbstractLogger
+{
+    /** @var list<string> */
+    public array $lines = [];
+
+    /** @var list<array<mixed>> */
+    public array $contexts = [];
+
+    /**
+     * @param array<mixed> $context
+     */
+    public function log($level, string|\Stringable $message, array $context = []): void
+    {
+        $this->lines[] = (is_string($level) ? $level : 'log') . ": {$message}";
+        $this->contexts[] = $context;
+    }
+}
+
+final class BrokenRecorder implements \Zana\Security\Spam\RecordingSpamRuleInterface
+{
+    public function check(Submission $submission): ?Signal
+    {
+        return null;
+    }
+
+    public function accepted(Submission $submission): void
+    {
+        throw new \LogicException('the application\'s store is down');
+    }
+}
+
+/** An application rule careless with its reason. */
+final class QuotesTheText implements SpamRuleInterface
+{
+    public function check(Submission $submission): Signal
+    {
+        return new Signal('quotes', 2, 'it said: ' . $submission->text());
+    }
+}
+
+/** An application rule careless with its name. */
+final class NamedByTheText implements SpamRuleInterface
+{
+    public function check(Submission $submission): Signal
+    {
+        return new Signal($submission->text(), 1, 'x');
     }
 }
