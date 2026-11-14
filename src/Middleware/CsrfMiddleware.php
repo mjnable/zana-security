@@ -19,7 +19,9 @@ use Zana\Security\Internal\HandlerReflection;
  * site:
  *
  * 1. Sec-Fetch-Site, when the browser sends it, must be same-origin or none;
- * 2. Origin, when sent, must match the request's host;
+ * 2. Origin, when sent, must match the request's host, and its port when it
+ *    names one (2.20, S16): browsers leave a default port out, so a site
+ *    behind a proxy that does not pass the port on is not refused;
  * 3. the token from the "_token" field or the X-CSRF-Token header must be
  *    valid for the form named by the "_form" field ("default" otherwise).
  *
@@ -57,7 +59,7 @@ final readonly class CsrfMiddleware implements MiddlewareInterface
         }
 
         $origin = $request->getHeaderLine('Origin');
-        if ($origin !== '' && $origin !== 'null' && strtolower((string) parse_url($origin, PHP_URL_HOST)) !== strtolower($request->getUri()->getHost())) {
+        if ($origin !== '' && $origin !== 'null' && !self::sameOrigin($origin, $request)) {
             throw new ForbiddenHttpException('Cross-site form submissions are not accepted.');
         }
 
@@ -80,6 +82,24 @@ final readonly class CsrfMiddleware implements MiddlewareInterface
         }
 
         return $handler->handle($request);
+    }
+
+    /**
+     * The Origin's host is the request's, and so is its port when it names one: https://site.example:8443 is another
+     * service on the same machine. The request's port is the one TrustedProxiesMiddleware found, or the URI's.
+     */
+    private static function sameOrigin(string $origin, ServerRequestInterface $request): bool
+    {
+        $uri = $request->getUri();
+        if (strtolower((string) parse_url($origin, PHP_URL_HOST)) !== strtolower($uri->getHost())) {
+            return false;
+        }
+        $port = parse_url($origin, PHP_URL_PORT);
+        if (!is_int($port)) {
+            return true;
+        }
+
+        return $port === ($uri->getPort() ?? ($uri->getScheme() === 'https' ? 443 : 80));
     }
 
     private function hasBearerToken(ServerRequestInterface $request): bool

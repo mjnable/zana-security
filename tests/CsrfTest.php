@@ -89,6 +89,19 @@ final class CsrfTest extends TestCase
         $this->assertSame(200, $this->post($kernel, '/contact', $fields, ['Sec-Fetch-Site' => 'same-origin', 'Origin' => 'https://shop.example'])->getStatusCode());
     }
 
+    public function testAnOriginOnAnotherPortIsAnotherSite(): void
+    {
+        [$kernel, $tokens] = $this->app();
+        $fields = ['_token' => $tokens->issue()];
+
+        $this->assertSame(403, $this->post($kernel, '/contact', $fields, ['Origin' => 'https://shop.example:8443'])->getStatusCode(), 'another service on the host (S16)');
+        $this->assertSame(200, $this->post($kernel, '/contact', $fields, ['Origin' => 'https://shop.example:443'])->getStatusCode(), 'the default port, written out');
+        $this->assertSame(200, $this->post($kernel, '/contact', $fields, ['Origin' => 'https://shop.example'])->getStatusCode(), 'no port: as browsers send it');
+
+        $onPort = (new ServerRequest('POST', 'https://shop.example:8443/contact', ['Accept' => 'application/json', 'Origin' => 'https://shop.example:8443']))->withParsedBody($fields);
+        $this->assertSame(200, $kernel->handle($onPort)->getStatusCode(), 'a site on a port of its own');
+    }
+
     public function testSafeMethodsApiCallsAndOptedOutHandlersAreNotChecked(): void
     {
         [$kernel] = $this->app();
