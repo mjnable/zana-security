@@ -3,6 +3,28 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.25.0 — Unreleased
+
+### Added
+
+- Bot verification (FE-64), with no provider code: `#[VerifyHuman(action: …, minimumScore: …)]` on a handler,
+  enforced by `BotVerificationMiddleware` on its route, asks a `BotVerifierInterface` about the token sent in its form
+  field or the `X-Bot-Token` header before the handler runs. Refused with 403 without a token, when the provider says
+  it is not a person's, below `minimumScore`, for another action, or, with `security.bot.hostnames`, from another site.
+  When the provider cannot be asked, refused too, unless `security.bot.on_unavailable` is `allow`; logged either way.
+  Each refusal dispatches `BotVerificationFailed`, never with the token. `NullBotVerifier` for development,
+  `FakeBotVerifier` for tests; mj-zana/captcha has the providers.
+- The `security.bot_verification` check: `#[VerifyHuman]` with no middleware on its route, no verifier registered, a
+  verifier that asks nobody in production, unusable settings; warnings for `minimumScore` with a provider that gives no
+  score. `security.global_middleware` now also reports `BotVerificationMiddleware` in `http.middleware`.
+- Spam rules: the text is reserved as soon as the rules let a post through and released if the handler fails, so the
+  same text sent while the first is still being handled is caught (FE-63 follow-up). A new optional
+  `ReservingSpamRuleInterface`; rules implementing only `RecordingSpamRuleInterface` keep their meaning.
+
+### Changed
+
+- A cache failure in the repeat rule is logged as a read, a write or a delete, each with what it means.
+
 ## 2.24.1 — 2026-11-14
 
 ### Fixed

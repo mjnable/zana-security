@@ -64,9 +64,18 @@ final readonly class SpamGuardMiddleware implements MiddlewareInterface
             throw new ForbiddenHttpException('The form could not be accepted.');
         }
 
-        $response = $handler->handle($request);
+        // 2.25: held while the handler runs, so the same text sent meanwhile is caught.
+        $this->guard->reserve($rules->form, $submission);
+        try {
+            $response = $handler->handle($request);
+        } catch (\Throwable $e) {
+            $this->guard->release($rules->form, $submission);
+            throw $e;
+        }
         if ($response->getStatusCode() < 400) {
             $this->guard->accepted($rules->form, $submission);
+        } else {
+            $this->guard->release($rules->form, $submission);
         }
 
         return $response;

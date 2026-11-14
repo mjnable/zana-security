@@ -339,6 +339,56 @@ final class SpamRulesTest extends TestCase
         $this->assertSame([303, '/thanks'], [$response->getStatusCode(), $response->getHeaderLine('Location')]);
     }
 
+    // ── 2.25: the text is held while the handler runs ──────────────────────
+
+    public function testTheSameTextSentWhileTheFirstIsHandledIsCaught(): void
+    {
+        $middleware = new SpamGuardMiddleware($this->guard(['contact' => ['duplicate_minutes' => 10]], new SpamCache()));
+        $post = self::post(['message' => 'Two tickets please']);
+        $meanwhile = null;
+
+        $first = $middleware->process($post, new CallsBack(static function () use ($middleware, $post, &$meanwhile): void {
+            try {
+                $middleware->process($post, new Answer());   // the second, while the first is still in its handler
+                $meanwhile = 'accepted';
+            } catch (ForbiddenHttpException) {
+                $meanwhile = 'refused';
+            }
+        }));
+
+        $this->assertSame(303, $first->getStatusCode());
+        $this->assertSame('refused', $meanwhile, 'before 2.25, both passed');
+    }
+
+    public function testAHandlerThatFailsReleasesTheText(): void
+    {
+        $middleware = new SpamGuardMiddleware($this->guard(['contact' => ['duplicate_minutes' => 10]], new SpamCache()));
+        $post = self::post(['message' => 'Two tickets please']);
+
+        try {
+            $middleware->process($post, new CallsBack(static fn () => throw new \RuntimeException('the database is down')));
+            self::fail('The handler\'s exception was swallowed.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('the database is down', $e->getMessage(), 'passed on as it was');
+        }
+        $this->assertSame(422, $middleware->process($post, new Answer(422))->getStatusCode(), 'sent again: not a repeat');
+        $this->assertSame(200, $middleware->process($post, new Answer())->getStatusCode(), 'and again after a 422: still not a repeat');
+        $this->expectException(ForbiddenHttpException::class);
+        $middleware->process($post, new Answer());   // now it was accepted: a repeat
+    }
+
+    public function testRulesThatOnlyRecordKeepTheir224Meaning(): void
+    {
+        $recorder = new OnlyRecords();
+        $guard = new SpamGuard(['contact' => ['rules' => [OnlyRecords::class]]], null, static fn (string $c): SpamRuleInterface => $recorder);
+        $middleware = new SpamGuardMiddleware($guard);
+
+        $middleware->process(self::post(['message' => 'a']), new Answer(422));
+        $this->assertSame([], $recorder->accepted, 'never told about a post the handler refused');
+        $middleware->process(self::post(['message' => 'b']), new Answer());
+        $this->assertSame(['b'], $recorder->accepted);
+    }
+
     // ── 2.24.1: a cache that fails, and no text in what is recorded ─────────
 
     public function testACacheThatCannotBeWrittenNeverFailsAReceivedMessage(): void
@@ -351,7 +401,7 @@ final class SpamRulesTest extends TestCase
 
         $this->assertSame(303, $response->getStatusCode(), 'the visitor is told it was received, as it was');
         $this->assertSame(1, $handler->calls);
-        $this->assertSame(['warning: The spam rule for repeated text could not use the cache, so it found nothing for this post; the other rules still applied.'], $logger->lines);
+        $this->assertSame(array_fill(0, 2, 'warning: The spam rule for repeated text could not write its entry in the cache, so a repeat of this post may not be caught.'), $logger->lines, 'the reservation (2.25), then the acceptance');
         $this->assertSame(['form' => 'contact', 'exception' => \RuntimeException::class], $logger->contexts[0], 'no text, no key');
     }
 
@@ -697,5 +747,37 @@ final class NamedByTheText implements SpamRuleInterface
     public function check(Submission $submission): Signal
     {
         return new Signal($submission->text(), 1, 'x');
+    }
+}
+
+/** A handler that runs some code, then answers 303. */
+final class CallsBack implements RequestHandlerInterface
+{
+    public function __construct(private readonly \Closure $during)
+    {
+    }
+
+    public function handle(ServerRequestInterface $request): ResponseInterface
+    {
+        ($this->during)();
+
+        return new Response(303, ['Location' => '/thanks']);
+    }
+}
+
+/** An application rule from 2.24 that only records what was accepted. */
+final class OnlyRecords implements \Zana\Security\Spam\RecordingSpamRuleInterface
+{
+    /** @var list<string> */
+    public array $accepted = [];
+
+    public function check(Submission $submission): ?Signal
+    {
+        return null;
+    }
+
+    public function accepted(Submission $submission): void
+    {
+        $this->accepted[] = $submission->text();
     }
 }

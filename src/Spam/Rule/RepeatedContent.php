@@ -6,7 +6,7 @@ namespace Zana\Security\Spam\Rule;
 
 use Closure;
 use Psr\SimpleCache\CacheInterface;
-use Zana\Security\Spam\RecordingSpamRuleInterface;
+use Zana\Security\Spam\ReservingSpamRuleInterface;
 use Zana\Security\Spam\Signal;
 use Zana\Security\Spam\Submission;
 
@@ -15,18 +15,19 @@ use Zana\Security\Spam\Submission;
  * (duplicate_minutes), from the same client, or with duplicate_scope
  * "everyone", from anyone. A fresh token does not make it new.
  *
- * Only a hash is kept, in the PSR-16 cache, never the text. Two identical
- * posts at the same instant can both pass: the rule catches repetition,
- * not a race.
+ * Only a hash is kept, in the PSR-16 cache, never the text. Since 2.25 the
+ * hash is reserved as soon as the rules let a post through, and released if
+ * the handler fails, so the same text sent while the first is still being
+ * handled is caught; only two reads within the same instant can both pass.
  */
-final readonly class RepeatedContent implements RecordingSpamRuleInterface
+final readonly class RepeatedContent implements ReservingSpamRuleInterface
 {
     private Closure $now;
 
     /**
      * @param 'client'|'everyone' $scope
      * @param (Closure(): int)|null $now
-     * @param (Closure(\Throwable): void)|null $cacheFailed Told when the cache cannot be read or written (2.24.1)
+     * @param (Closure(\Throwable, 'read'|'write'|'delete'): void)|null $cacheFailed Told when the cache cannot be read or written (2.24.1)
      */
     public function __construct(
         private CacheInterface $cache,
@@ -52,7 +53,7 @@ final readonly class RepeatedContent implements RecordingSpamRuleInterface
         try {
             $until = $this->cache->get($key);
         } catch (\Throwable $e) {
-            $this->failed($e);
+            $this->failed($e, 'read');
 
             return null;
         }
@@ -76,14 +77,43 @@ final readonly class RepeatedContent implements RecordingSpamRuleInterface
         try {
             $this->cache->set($key, ($this->now)() + $this->minutes * 60, $this->minutes * 60);
         } catch (\Throwable $e) {
-            $this->failed($e);
+            $this->failed($e, 'write');
         }
     }
 
-    private function failed(\Throwable $e): void
+    /**
+     * Holds the hash while the handler runs (2.25), for as long as an
+     * accepted one, in case the request ends without a word back.
+     */
+    public function reserve(Submission $submission): void
+    {
+        $this->accepted($submission);
+    }
+
+    /**
+     * The handler answered with an error or failed: the text was not
+     * accepted, so sending it again is not a repeat (2.25).
+     */
+    public function release(Submission $submission): void
+    {
+        $key = $this->key($submission);
+        if ($key === null) {
+            return;
+        }
+        try {
+            $this->cache->delete($key);
+        } catch (\Throwable $e) {
+            $this->failed($e, 'delete');
+        }
+    }
+
+    /**
+     * @param 'read'|'write'|'delete' $operation
+     */
+    private function failed(\Throwable $e, string $operation): void
     {
         if ($this->cacheFailed !== null) {
-            ($this->cacheFailed)($e);
+            ($this->cacheFailed)($e, $operation);
         }
     }
 

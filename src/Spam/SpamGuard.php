@@ -132,6 +132,41 @@ final class SpamGuard
     }
 
     /**
+     * Holds what the rules let through while the handler runs (2.25), for
+     * the rules that reserve. A rule that fails is logged: the post goes on.
+     */
+    public function reserve(string $form, Submission $submission): void
+    {
+        $this->each($form, static fn (ReservingSpamRuleInterface $rule) => $rule->reserve($submission), 'reserve');
+    }
+
+    /**
+     * The handler answered with an error or failed: frees what reserve() held
+     * (2.25), so the corrected form is not taken for a repeat.
+     */
+    public function release(string $form, Submission $submission): void
+    {
+        $this->each($form, static fn (ReservingSpamRuleInterface $rule) => $rule->release($submission), 'release');
+    }
+
+    /**
+     * @param Closure(ReservingSpamRuleInterface): void $call
+     */
+    private function each(string $form, Closure $call, string $what): void
+    {
+        foreach ($this->rules($this->profile($form)) as $rule) {
+            if (!$rule instanceof ReservingSpamRuleInterface) {
+                continue;
+            }
+            try {
+                $call($rule);
+            } catch (\Throwable $e) {
+                $this->logger?->error("A spam rule failed to {$what} a form post; the post went on.", ['form' => $form, 'rule' => $rule::class, 'exception' => $e::class]);
+            }
+        }
+    }
+
+    /**
      * What may be recorded of a signal, in SpamRefused and the audit log
      * (2.24.1): Zana's rules give counts and the configured terms, so their
      * reasons are kept; an application's rule may put anything in its
@@ -173,8 +208,10 @@ final class SpamGuard
                 $profile->duplicateMinutes,
                 $profile->duplicateScope,
                 $this->now,
-                static function (\Throwable $e) use ($logger, $profile): void {
-                    $logger?->warning('The spam rule for repeated text could not use the cache, so it found nothing for this post; the other rules still applied.', ['form' => $profile->form, 'exception' => $e::class]);
+                static function (\Throwable $e, string $operation) use ($logger, $profile): void {
+                    $logger?->warning($operation === 'read'
+                        ? 'The spam rule for repeated text could not read the cache, so it found nothing for this post; the other rules still applied.'
+                        : "The spam rule for repeated text could not {$operation} its entry in the cache, so a repeat of this post may not be caught.", ['form' => $profile->form, 'exception' => $e::class]);
                 },
             );
         }

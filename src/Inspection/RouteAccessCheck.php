@@ -13,6 +13,7 @@ use Zana\Core\Inspection\Severity;
 use Zana\Routing\Router;
 use Zana\Security\Internal\HandlerReflection;
 use Zana\Security\Middleware\AuthorizationMiddleware;
+use Zana\Security\Middleware\BotVerificationMiddleware;
 use Zana\Security\Middleware\RateLimitMiddleware;
 use Zana\Security\Middleware\SpamGuardMiddleware;
 
@@ -67,7 +68,7 @@ final readonly class RouteAccessCheck implements ApplicationCheck
         $global = array_values(array_filter($config->array('http.middleware', []), is_string(...)));
         $findings = [];
 
-        foreach ([AuthorizationMiddleware::class => '#[RequiresAuthentication] and #[RequiresPermission]', RateLimitMiddleware::class => '#[RateLimit]', SpamGuardMiddleware::class => '#[SpamRules]'] as $middleware => $what) {
+        foreach ([AuthorizationMiddleware::class => '#[RequiresAuthentication] and #[RequiresPermission]', RateLimitMiddleware::class => '#[RateLimit]', SpamGuardMiddleware::class => '#[SpamRules]', BotVerificationMiddleware::class => '#[VerifyHuman]'] as $middleware => $what) {
             if (RouteAccess::has($global, $middleware)) {
                 $findings[] = new Finding(
                     'security.global_middleware',

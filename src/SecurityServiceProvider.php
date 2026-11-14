@@ -17,7 +17,10 @@ use Zana\Database\ConnectionInterface;
 use Zana\Security\Console\ExposureCommand;
 use Zana\Security\Inspection\ExposureCheck;
 use Zana\Security\Inspection\RoleAssignmentsCheck;
+use Zana\Security\Bot\BotVerifierInterface;
+use Zana\Security\Inspection\BotVerificationCheck;
 use Zana\Security\Inspection\SpamRulesCheck;
+use Zana\Security\Middleware\BotVerificationMiddleware;
 use Zana\Security\Middleware\SpamGuardMiddleware;
 use Zana\Security\Spam\SpamGuard;
 use Zana\Security\Spam\SpamRuleInterface;
@@ -190,6 +193,24 @@ final class SecurityServiceProvider extends ServiceProvider
             })->uses(ConfigurationInterface::class, SpamGuard::class, SecurityContext::class, EventDispatcherInterface::class)
             ->singleton(SpamRulesCheck::class)
             ->tag(ApplicationCheck::TAG, SpamRulesCheck::class)
+            // 2.25, FE-64: bot verification; the verifier is the application's or mj-zana/captcha's.
+            ->scoped(BotVerificationMiddleware::class, static function (ServiceResolverInterface $r): BotVerificationMiddleware {
+                $config = $r->get(ConfigurationInterface::class);
+                assert($config instanceof ConfigurationInterface);
+                $verifier = $r->has(BotVerifierInterface::class) ? $r->get(BotVerifierInterface::class) : null;
+                $hostnames = array_values(array_map(static fn (mixed $h): string => strtolower((string) $h), array_filter($config->array('security.bot.hostnames', []), is_string(...))));
+                $logger = $r->has(LoggerInterface::class) ? $r->get(LoggerInterface::class) : null;
+
+                return new BotVerificationMiddleware(
+                    $verifier instanceof BotVerifierInterface ? $verifier : null,
+                    $hostnames,
+                    $config->get('security.bot.on_unavailable', 'refuse') === 'allow' ? 'allow' : 'refuse',
+                    self::events($r),
+                    $logger instanceof LoggerInterface ? $logger : null,
+                );
+            })->uses(ConfigurationInterface::class, BotVerifierInterface::class, EventDispatcherInterface::class, LoggerInterface::class)
+            ->singleton(BotVerificationCheck::class)
+            ->tag(ApplicationCheck::TAG, BotVerificationCheck::class)
             // Scoped, so the user provider may be scoped like other repositories (FE-40)
             ->scoped(PasswordResetTokens::class, static function (ServiceResolverInterface $r): PasswordResetTokens {
                 $signer = $r->get(TokenSigner::class);
