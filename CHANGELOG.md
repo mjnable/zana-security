@@ -9,6 +9,9 @@ not change this package is not listed.
 
 - `DatabaseRoleAssignmentStore` compares a scope by type and id, not as one `type:id` string, as the in-memory store
   already did (S32).
+- `TwoFactorStateSwapInterface`, optional for user providers: with it, a second-factor code is accepted only if the
+  stored state is still the one it was checked against, so two sign-ins at the same moment cannot give back a used
+  recovery code or count one TOTP code twice (S14). Without it, behaviour is unchanged.
 
 ## 2.19.2 — 2026-11-07
 

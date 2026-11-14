@@ -15,6 +15,7 @@ use Zana\Security\InvalidTokenException;
 use Zana\Security\RateLimit\RateLimiter;
 use Zana\Security\SecurityException;
 use Zana\Security\TokenSigner;
+use Zana\Security\TwoFactorStateSwapInterface;
 use Zana\Security\TwoFactorUserProviderInterface;
 use Zana\Security\UserInterface;
 
@@ -34,6 +35,9 @@ use Zana\Security\UserInterface;
  * - A state that cannot be opened, because the key changed or the state was
  *   damaged, still counts as a second factor, and no code passes it: the
  *   sign-in fails closed (2.19.1).
+ * - With a provider that implements TwoFactorStateSwapInterface, a code is
+ *   accepted only if the state is still the one it was checked against, so
+ *   two sign-ins at once cannot give back a used recovery code (2.20, S14).
  */
 final readonly class TwoFactor
 {
@@ -125,13 +129,16 @@ final readonly class TwoFactor
 
             return false;
         }
-        $state = $this->state($user);
+        $sealed = $this->users->twoFactorStateFor($user);
+        $state = Internal\State::open($this->box, $sealed);
         if ($state === null || !$state->confirmed) {
             return false;
         }
         $step = $this->totp->verify($state->secret, $code, $state->lastStep);
         if ($step !== null) {
-            $this->save($user, $state->with(lastStep: $step));
+            if (!$this->replace($user, $sealed, $state->with(lastStep: $step))) {
+                return false;   // another sign-in changed the state meanwhile
+            }
             $this->limiter?->reset($key, $this->window);
 
             return true;
@@ -140,7 +147,9 @@ final readonly class TwoFactor
         $hash = $this->recoveryHash($code);
         $remaining = array_values(array_filter($state->recoveryHashes, static fn (string $h): bool => !hash_equals($h, $hash)));
         if (count($remaining) < count($state->recoveryHashes)) {
-            $this->save($user, $state->with(recoveryHashes: $remaining));
+            if (!$this->replace($user, $sealed, $state->with(recoveryHashes: $remaining))) {
+                return false;
+            }
             $this->limiter?->reset($key, $this->window);
             $this->events?->dispatch(new RecoveryCodeUsed($user->identifier(), count($remaining), $clientIp));
 
@@ -224,6 +233,20 @@ final readonly class TwoFactor
     private function save(UserInterface $user, Internal\State $state): void
     {
         $this->users->saveTwoFactorState($user, $state->seal($this->box));
+    }
+
+    /**
+     * Store the new state if the stored one is still $expected, when the provider can tell (S14).
+     */
+    private function replace(UserInterface $user, ?string $expected, Internal\State $state): bool
+    {
+        if (!$this->users instanceof TwoFactorStateSwapInterface) {
+            $this->save($user, $state);
+
+            return true;
+        }
+
+        return $this->users->swapTwoFactorState($user, $expected, $state->seal($this->box));
     }
 
     private function recoveryHash(string $code): string
