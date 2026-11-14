@@ -3,6 +3,15 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.22.0 — Unreleased
+
+### Added
+
+- `Inspection\RouteAccess`: who may reach one route, as its declarations and middleware say: public with its reason,
+  a Zana access rule and whether `AuthorizationMiddleware` enforces it, the application's declared sign-in middleware,
+  session sign-in, CSRF protection and the enforced rate limit; `needsUser()` and `declared()` (FE-68). The security
+  rules of `check` and the attacks of mj-zana/testing read it, so they judge every route alike.
+
 ## 2.21.0 — 2026-11-14
 
 ### Security

@@ -4,26 +4,16 @@ declare(strict_types=1);
 
 namespace Zana\Security\Inspection;
 
-use Psr\Http\Server\MiddlewareInterface;
 use Zana\Configuration\ConfigurationInterface;
 use Zana\Core\ApplicationInterface;
 use Zana\Core\Inspection\ApplicationCheck;
 use Zana\Core\Inspection\Finding;
 use Zana\Core\Inspection\SecurityRules;
 use Zana\Core\Inspection\Severity;
-use Zana\Routing\Attribute\PublicRoute;
-use Zana\Routing\Route;
 use Zana\Routing\Router;
-use Zana\Security\Attribute\RateLimit;
-use Zana\Security\Attribute\RequiresAuthentication;
-use Zana\Security\Attribute\RequiresPermission;
-use Zana\Security\Attribute\WithoutCsrf;
 use Zana\Security\Internal\HandlerReflection;
-use Zana\Security\Middleware\AuthenticationMiddleware;
 use Zana\Security\Middleware\AuthorizationMiddleware;
-use Zana\Security\Middleware\CsrfMiddleware;
 use Zana\Security\Middleware\RateLimitMiddleware;
-use Zana\Security\Session\SessionAuthenticationMiddleware;
 
 /**
  * The security rules for routes (2.21, FE-68, ADR-033). Errors with
@@ -57,23 +47,11 @@ use Zana\Security\Session\SessionAuthenticationMiddleware;
  * declaration it cannot accept (security.access_middleware): an empty reason,
  * a class that is not a middleware, or Zana's own middleware, none of which
  * refuses anonymous visitors by itself.
+ *
+ * Each route is read through RouteAccess (2.22), as mj-zana/testing's attacks read it.
  */
 final readonly class RouteAccessCheck implements ApplicationCheck
 {
-    private const array UNSAFE = ['POST', 'PUT', 'PATCH', 'DELETE'];
-
-    /** By name: mj-zana/session is optional. */
-    private const string SESSION_MIDDLEWARE = 'Zana\Session\SessionMiddleware';
-
-    /** Zana's middleware that security.access_middleware cannot name, and why. */
-    private const array NOT_ACCESS_MIDDLEWARE = [
-        AuthenticationMiddleware::class => 'it identifies a user when there is one, and lets anonymous requests through.',
-        SessionAuthenticationMiddleware::class => 'it identifies a user when there is one, and lets anonymous requests through.',
-        AuthorizationMiddleware::class => 'it enforces #[RequiresAuthentication] and #[RequiresPermission], and does nothing on a route without them.',
-        CsrfMiddleware::class => 'it checks where a request comes from, not who sends it.',
-        RateLimitMiddleware::class => 'it limits how often, not who.',
-    ];
-
     public function findings(ApplicationInterface $application): array
     {
         $container = $application->container();
@@ -89,7 +67,7 @@ final readonly class RouteAccessCheck implements ApplicationCheck
         $findings = [];
 
         foreach ([AuthorizationMiddleware::class => '#[RequiresAuthentication] and #[RequiresPermission]', RateLimitMiddleware::class => '#[RateLimit]'] as $middleware => $what) {
-            if (self::has($global, $middleware)) {
+            if (RouteAccess::has($global, $middleware)) {
                 $findings[] = new Finding(
                     'security.global_middleware',
                     $strict,
@@ -100,28 +78,28 @@ final readonly class RouteAccessCheck implements ApplicationCheck
             }
         }
 
-        $declared = self::accessMiddleware($config, $strict, $findings);
+        $problems = [];
+        $declared = RouteAccess::declaredMiddleware($config, $problems);
+        foreach ($problems as $problem) {
+            $findings[] = new Finding(
+                'security.access_middleware',
+                $strict,
+                $problem,
+                hint: 'Name the class of a middleware that refuses anonymous visitors, with how it does: App\\Web\\SignedIn::class => \'Sends visitors without an API session to sign in\'. Zana\'s own protection is #[RequiresAuthentication] or #[RequiresPermission] with AuthorizationMiddleware.',
+                security: true,
+            );
+        }
         $covered = array_fill_keys(array_keys($declared), []);
 
         foreach ($router->routes() as $route) {
+            $access = RouteAccess::of($route, $global, $declared);
             $where = implode('|', $route->methods) . ' ' . $route->path;
             $handler = $route->handler;
-            $middleware = $route->getMiddleware();
-            $requiresUser = HandlerReflection::has($handler, RequiresAuthentication::class) || HandlerReflection::has($handler, RequiresPermission::class);
-            $public = PublicRoute::reasonFor($route);
-            $changesData = array_intersect($route->methods, self::UNSAFE) !== [];
-            $application = null;   // the declared middleware of the application on this route, if any
-            foreach (array_keys($declared) as $class) {
-                if (self::has($middleware, $class)) {
-                    $application = $class;
-                    break;
-                }
-            }
 
-            if ($application !== null) {
-                $covered[$application][] = $where;
+            if ($access->application !== null) {
+                $covered[$access->application][] = $where;
             }
-            if (!$requiresUser && $public === null && $application === null) {
+            if (!$access->declared()) {
                 $findings[] = new Finding(
                     'security.route_access',
                     $strict,
@@ -131,23 +109,21 @@ final readonly class RouteAccessCheck implements ApplicationCheck
                     security: true,
                 );
             }
-            if ($requiresUser && !self::has($middleware, AuthorizationMiddleware::class)) {
+            if ($access->requiresUser && !$access->authorized) {
                 $findings[] = new Finding(
                     'security.access_unenforced',
                     $strict,
                     "{$where} requires a user, but AuthorizationMiddleware is not on the route, so anyone reaches it."
-                        . ($public === null ? '' : ' It also says it is public, which contradicts that.'),
+                        . ($access->public === null ? '' : ' It also says it is public, which contradicts that.'),
                     self::file($handler),
-                    hint: $public === null
+                    hint: $access->public === null
                         ? 'Add AuthorizationMiddleware to the route or its group. Authentication middleware alone lets anonymous requests through.'
                         : 'If anyone may reach it on purpose, such as a preview link checked by its token, move it to a class without #[RequiresAuthentication] or #[RequiresPermission], and keep #[PublicRoute] there. Otherwise add AuthorizationMiddleware.',
                     security: true,
                 );
             }
-            if ($changesData) {
-                $all = [...$global, ...$middleware];
-                $sessions = self::has($all, self::SESSION_MIDDLEWARE) || self::has($all, SessionAuthenticationMiddleware::class);
-                if ($sessions && !self::has($all, CsrfMiddleware::class) && !HandlerReflection::has($handler, WithoutCsrf::class)) {
+            if ($access->changesData) {
+                if ($access->sessions && !$access->csrfProtected && !$access->withoutCsrf) {
                     $findings[] = new Finding(
                         'security.csrf',
                         $strict,
@@ -157,7 +133,7 @@ final readonly class RouteAccessCheck implements ApplicationCheck
                         security: true,
                     );
                 }
-                if ($public !== null && !(HandlerReflection::has($handler, RateLimit::class) && self::has($middleware, RateLimitMiddleware::class))) {
+                if ($access->public !== null && $access->rateLimit === null) {
                     $findings[] = new Finding(
                         'security.rate_limit',
                         Severity::Warning,
@@ -190,56 +166,6 @@ final readonly class RouteAccessCheck implements ApplicationCheck
         }
 
         return $findings;
-    }
-
-    /**
-     * The application's own access middleware it declares (2.21), each with
-     * the reason it refuses anonymous visitors. A declaration that cannot be
-     * accepted is reported, and does not count.
-     *
-     * @param list<Finding> $findings
-     * @return array<class-string, string>
-     */
-    private static function accessMiddleware(ConfigurationInterface $config, Severity $strict, array &$findings): array
-    {
-        $refuse = static function (string $message, string $hint) use (&$findings, $strict): void {
-            $findings[] = new Finding('security.access_middleware', $strict, $message, hint: $hint, security: true);
-        };
-        $declared = [];
-        foreach ($config->array('security.access_middleware', []) as $class => $reason) {
-            $name = is_string($class) ? $class : var_export($class, true);
-            if (!is_string($class) || !class_exists($class) || !is_a($class, MiddlewareInterface::class, true)) {
-                $refuse("security.access_middleware names {$name}, which is not a middleware class.", 'Name the class of the middleware, e.g. App\\Web\\SignedIn::class => \'…\'.');
-                continue;
-            }
-            if (!is_string($reason) || trim($reason) === '') {
-                $refuse("security.access_middleware gives no reason for {$class}.", 'Say how it refuses anonymous visitors, e.g. \'Sends visitors without an API session to sign in\'.');
-                continue;
-            }
-            foreach (self::NOT_ACCESS_MIDDLEWARE as $zana => $why) {
-                if (is_a($class, $zana, true)) {
-                    $refuse("security.access_middleware names {$class}: {$why}", 'Remove it. Zana\'s own protection is #[RequiresAuthentication] or #[RequiresPermission] with AuthorizationMiddleware.');
-                    continue 2;
-                }
-            }
-            $declared[$class] = trim($reason);
-        }
-
-        return $declared;
-    }
-
-    /**
-     * @param list<mixed> $middleware Class names or instances
-     */
-    private static function has(array $middleware, string $class): bool
-    {
-        foreach ($middleware as $item) {
-            if ((is_string($item) && is_a($item, $class, true)) || $item instanceof $class) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**
