@@ -15,6 +15,13 @@ not change this package is not listed.
   - `security.global_middleware`: `AuthorizationMiddleware` or `RateLimitMiddleware` in `http.middleware`, where it runs
     before routing and enforces nothing;
   - `security.csrf`: a route that changes data with session sign-in, and no `CsrfMiddleware` or `#[WithoutCsrf]`.
+- An application's own sign-in middleware counts as needing a user when it is declared in `security.access_middleware`,
+  with the reason it refuses anonymous visitors: `[App\Web\SignedIn::class => 'Sends visitors without an API session to
+  sign in']` (ADR-033 amendment). It counts only on the routes it runs on as route middleware, never in
+  `http.middleware`, and never as a permission check: `#[RequiresPermission]` still needs `AuthorizationMiddleware`.
+  `check` lists the routes that rely on it (`security.application_access`, info), warns when it runs on none, and
+  refuses (`security.access_middleware`) a declaration without a reason, a class that is not a middleware, or Zana's
+  own middleware, none of which refuses anonymous visitors by itself.
 - `security.rate_limit`, always a warning: a public route that changes data without `#[RateLimit]` and
   `RateLimitMiddleware`.
 - Requires mj-zana/core 2.21, and mj-zana/routing 2.21 or later when it is installed (`conflict`).

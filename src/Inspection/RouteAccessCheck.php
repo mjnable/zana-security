@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Zana\Security\Inspection;
 
+use Psr\Http\Server\MiddlewareInterface;
 use Zana\Configuration\ConfigurationInterface;
 use Zana\Core\ApplicationInterface;
 use Zana\Core\Inspection\ApplicationCheck;
@@ -18,6 +19,7 @@ use Zana\Security\Attribute\RequiresAuthentication;
 use Zana\Security\Attribute\RequiresPermission;
 use Zana\Security\Attribute\WithoutCsrf;
 use Zana\Security\Internal\HandlerReflection;
+use Zana\Security\Middleware\AuthenticationMiddleware;
 use Zana\Security\Middleware\AuthorizationMiddleware;
 use Zana\Security\Middleware\CsrfMiddleware;
 use Zana\Security\Middleware\RateLimitMiddleware;
@@ -42,6 +44,19 @@ use Zana\Security\Session\SessionAuthenticationMiddleware;
  * - security.rate_limit, always a warning: a public route that changes data
  *   without #[RateLimit] and RateLimitMiddleware. A form behind a CAPTCHA is
  *   a false alarm.
+ *
+ * An application's own sign-in middleware (2.21, ADR-033 amendment) counts
+ * when it is declared, with the reason it refuses anonymous visitors:
+ *
+ *     'access_middleware' => [App\Web\SignedIn::class => 'Sends visitors without an API session to sign in'],
+ *
+ * A route counts as needing a user only when that middleware is on the route
+ * or its group, not in http.middleware. It never counts as a permission
+ * check: #[RequiresPermission] still needs AuthorizationMiddleware. check says
+ * which routes rely on it (security.application_access, info), and reports a
+ * declaration it cannot accept (security.access_middleware): an empty reason,
+ * a class that is not a middleware, or Zana's own middleware, none of which
+ * refuses anonymous visitors by itself.
  */
 final readonly class RouteAccessCheck implements ApplicationCheck
 {
@@ -49,6 +64,15 @@ final readonly class RouteAccessCheck implements ApplicationCheck
 
     /** By name: mj-zana/session is optional. */
     private const string SESSION_MIDDLEWARE = 'Zana\Session\SessionMiddleware';
+
+    /** Zana's middleware that security.access_middleware cannot name, and why. */
+    private const array NOT_ACCESS_MIDDLEWARE = [
+        AuthenticationMiddleware::class => 'it identifies a user when there is one, and lets anonymous requests through.',
+        SessionAuthenticationMiddleware::class => 'it identifies a user when there is one, and lets anonymous requests through.',
+        AuthorizationMiddleware::class => 'it enforces #[RequiresAuthentication] and #[RequiresPermission], and does nothing on a route without them.',
+        CsrfMiddleware::class => 'it checks where a request comes from, not who sends it.',
+        RateLimitMiddleware::class => 'it limits how often, not who.',
+    ];
 
     public function findings(ApplicationInterface $application): array
     {
@@ -76,6 +100,9 @@ final readonly class RouteAccessCheck implements ApplicationCheck
             }
         }
 
+        $declared = self::accessMiddleware($config, $strict, $findings);
+        $covered = array_fill_keys(array_keys($declared), []);
+
         foreach ($router->routes() as $route) {
             $where = implode('|', $route->methods) . ' ' . $route->path;
             $handler = $route->handler;
@@ -83,14 +110,24 @@ final readonly class RouteAccessCheck implements ApplicationCheck
             $requiresUser = HandlerReflection::has($handler, RequiresAuthentication::class) || HandlerReflection::has($handler, RequiresPermission::class);
             $public = PublicRoute::reasonFor($route);
             $changesData = array_intersect($route->methods, self::UNSAFE) !== [];
+            $application = null;   // the declared middleware of the application on this route, if any
+            foreach (array_keys($declared) as $class) {
+                if (self::has($middleware, $class)) {
+                    $application = $class;
+                    break;
+                }
+            }
 
-            if (!$requiresUser && $public === null) {
+            if ($application !== null) {
+                $covered[$application][] = $where;
+            }
+            if (!$requiresUser && $public === null && $application === null) {
                 $findings[] = new Finding(
                     'security.route_access',
                     $strict,
                     "{$where} does not say who may reach it.",
                     self::file($handler),
-                    hint: 'Add #[RequiresAuthentication] or #[RequiresPermission(\'…\')] with AuthorizationMiddleware on the route, or #[PublicRoute(reason: \'…\')] if anyone may reach it.',
+                    hint: 'Add #[RequiresAuthentication] or #[RequiresPermission(\'…\')] with AuthorizationMiddleware on the route, or #[PublicRoute(reason: \'…\')] if anyone may reach it. An application\'s own sign-in middleware counts when it is declared in security.access_middleware.',
                     security: true,
                 );
             }
@@ -133,7 +170,62 @@ final readonly class RouteAccessCheck implements ApplicationCheck
             }
         }
 
+        foreach ($covered as $class => $routes) {
+            $findings[] = $routes === []
+                ? new Finding(
+                    'security.application_access',
+                    Severity::Warning,
+                    "{$class} is declared in security.access_middleware, but runs on no route, so it protects nothing.",
+                    hint: 'Add it to the routes or groups it protects, or remove the declaration.',
+                    security: true,
+                )
+                : new Finding(
+                    'security.application_access',
+                    Severity::Info,
+                    count($routes) . " route(s) count as needing a user because {$class} runs on them, as the application declares: "
+                        . "\"{$declared[$class]}\". Zana does not check that it refuses anonymous visitors, nor any permission: "
+                        . 'those stay the application\'s. ' . implode(', ', array_slice($routes, 0, 5)) . (count($routes) > 5 ? ', …' : '') . '.',
+                    security: true,
+                );
+        }
+
         return $findings;
+    }
+
+    /**
+     * The application's own access middleware it declares (2.21), each with
+     * the reason it refuses anonymous visitors. A declaration that cannot be
+     * accepted is reported, and does not count.
+     *
+     * @param list<Finding> $findings
+     * @return array<class-string, string>
+     */
+    private static function accessMiddleware(ConfigurationInterface $config, Severity $strict, array &$findings): array
+    {
+        $refuse = static function (string $message, string $hint) use (&$findings, $strict): void {
+            $findings[] = new Finding('security.access_middleware', $strict, $message, hint: $hint, security: true);
+        };
+        $declared = [];
+        foreach ($config->array('security.access_middleware', []) as $class => $reason) {
+            $name = is_string($class) ? $class : var_export($class, true);
+            if (!is_string($class) || !class_exists($class) || !is_a($class, MiddlewareInterface::class, true)) {
+                $refuse("security.access_middleware names {$name}, which is not a middleware class.", 'Name the class of the middleware, e.g. App\\Web\\SignedIn::class => \'…\'.');
+                continue;
+            }
+            if (!is_string($reason) || trim($reason) === '') {
+                $refuse("security.access_middleware gives no reason for {$class}.", 'Say how it refuses anonymous visitors, e.g. \'Sends visitors without an API session to sign in\'.');
+                continue;
+            }
+            foreach (self::NOT_ACCESS_MIDDLEWARE as $zana => $why) {
+                if (is_a($class, $zana, true)) {
+                    $refuse("security.access_middleware names {$class}: {$why}", 'Remove it. Zana\'s own protection is #[RequiresAuthentication] or #[RequiresPermission] with AuthorizationMiddleware.');
+                    continue 2;
+                }
+            }
+            $declared[$class] = trim($reason);
+        }
+
+        return $declared;
     }
 
     /**

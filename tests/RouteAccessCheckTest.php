@@ -58,6 +58,86 @@ final class RouteAccessCheckTest extends TestCase
         $this->assertSame(Severity::Error, $this->findings($routes, strict: true)[0]->severity);
     }
 
+    // ── An application's own sign-in middleware (2.21, ADR-033 amendment) ────
+
+    public function testDeclaredApplicationMiddlewareCountsOnlyOnTheRoutesItRunsOn(): void
+    {
+        $config = ['security.access_middleware' => [ApiSessionRequired::class => 'Sends visitors without an API session to sign in; the API checks every permission']];
+        $findings = $this->findings(static function (Router $r): void {
+            $r->group('/manage', static function (Router $r): void {
+                $r->get('', [UndeclaredController::class, 'index']);
+                $r->get('/events', [UndeclaredController::class, 'index']);
+            }, [ApiSessionRequired::class]);
+            $r->get('/elsewhere', [UndeclaredController::class, 'index']);   // the middleware does not run here
+        }, $config, strict: true);
+
+        $this->assertSame(['security.route_access GET /elsewhere', 'security.application_access 2 route(s)'], self::summary($findings), 'only where it runs, and a route without it is still an error');
+        $this->assertSame(Severity::Error, $findings[0]->severity);
+        $info = $findings[1];
+        $this->assertSame(Severity::Info, $info->severity, 'reported apart from Zana\'s own protection, and failing nothing');
+        $this->assertStringContainsString(ApiSessionRequired::class . ' runs on them', $info->message);
+        $this->assertStringContainsString('"Sends visitors without an API session to sign in; the API checks every permission"', $info->message);
+        $this->assertStringContainsString('Zana does not check that it refuses anonymous visitors, nor any permission', $info->message);
+        $this->assertStringContainsString('GET /manage, GET /manage/events', $info->message);
+    }
+
+    public function testApplicationMiddlewareInHttpMiddlewareDoesNotCount(): void
+    {
+        $findings = $this->findings(
+            static fn (Router $r) => $r->get('/manage', [UndeclaredController::class, 'index']),
+            ['http.middleware' => [ApiSessionRequired::class], 'security.access_middleware' => [ApiSessionRequired::class => 'Sends visitors to sign in']],
+            strict: true,
+        );
+
+        $this->assertSame(['security.route_access GET /manage', 'security.application_access ' . ApiSessionRequired::class . ' is'], self::summary($findings), 'not tied to the route: it counts nowhere');
+        $this->assertSame(Severity::Warning, $findings[1]->severity);
+        $this->assertStringContainsString('runs on no route, so it protects nothing', $findings[1]->message);
+    }
+
+    public function testApplicationMiddlewareIsNeverAPermissionCheck(): void
+    {
+        // A permission still needs AuthorizationMiddleware: signing in says nothing about what a user may do.
+        $findings = $this->findings(
+            static fn (Router $r) => $r->get('/reports', [ProtectedController::class, 'report'])->middleware(ApiSessionRequired::class),
+            ['security.access_middleware' => [ApiSessionRequired::class => 'Sends visitors to sign in']],
+            strict: true,
+        );
+
+        $this->assertSame(['security.access_unenforced GET /reports', 'security.application_access 1 route(s)'], self::summary($findings));
+        $this->assertSame(Severity::Error, $findings[0]->severity);
+        $this->assertStringContainsString('nor any permission', $findings[1]->message);
+    }
+
+    public function testADeclarationThatCannotBeAcceptedIsReportedAndCountsForNothing(): void
+    {
+        $findings = $this->findings(static function (Router $r): void {
+            $r->get('/a', [UndeclaredController::class, 'index'])->middleware(AuthenticationMiddleware::class);
+            $r->get('/b', [UndeclaredController::class, 'index'])->middleware(SessionAuthenticationMiddleware::class);
+            $r->get('/c', [UndeclaredController::class, 'index'])->middleware(ApiSessionRequired::class);
+        }, ['security.access_middleware' => [
+            AuthenticationMiddleware::class => 'Bearer tokens',
+            SessionAuthenticationMiddleware::class => 'Sessions',
+            AuthorizationMiddleware::class => 'Zana',
+            CsrfMiddleware::class => 'Forms',
+            RateLimitMiddleware::class => 'Limits',
+            ApiSessionRequired::class => '   ',
+            UndeclaredController::class => 'Not a middleware',
+            'App\Missing' => 'No such class',
+        ]], strict: true);
+
+        $refused = array_values(array_filter($findings, static fn (Finding $f): bool => $f->id === 'security.access_middleware'));
+        $this->assertCount(8, $refused, implode("\n", array_map(static fn (Finding $f): string => $f->message, $findings)));
+        $this->assertStringContainsString('lets anonymous requests through', $refused[0]->message);
+        $this->assertStringContainsString('gives no reason', $refused[5]->message);
+        $this->assertStringContainsString('not a middleware class', $refused[6]->message);
+        $this->assertSame(Severity::Error, $refused[0]->severity);
+        $this->assertSame(
+            ['security.route_access GET /a', 'security.route_access GET /b', 'security.route_access GET /c'],
+            array_values(array_filter(self::summary($findings), static fn (string $s): bool => str_starts_with($s, 'security.route_access'))),
+            'a refused declaration protects nothing',
+        );
+    }
+
     public function testAPublicMethodOnAClassThatRequiresAUserIsAContradiction(): void
     {
         // Found in zanabler: a preview link, checked by its token, on an admin controller that requires a permission.
@@ -225,6 +305,15 @@ final class ProtectedController
     public function report(): string
     {
         return 'report';
+    }
+}
+
+/** An application's own sign-in middleware, as Siyati web's SignedIn. */
+final class ApiSessionRequired implements \Psr\Http\Server\MiddlewareInterface
+{
+    public function process(\Psr\Http\Message\ServerRequestInterface $request, \Psr\Http\Server\RequestHandlerInterface $handler): \Psr\Http\Message\ResponseInterface
+    {
+        return $handler->handle($request);
     }
 }
 
