@@ -23,6 +23,9 @@
         "mj-zana/session": "For session login: SessionLogin and SessionAuthenticationMiddleware",
         "mj-zana/database": "For role assignments in a table: DatabaseRoleAssignmentStore (2.17)"
     },
+    "conflict": {
+        "mj-zana/routing": "<2.21"
+    },
     "autoload": {
         "psr-4": {
             "Zana\\Security\\": "src/"
@@ -43,7 +46,7 @@
         { "type": "path", "url": "../zana-console", "options": { "symlink": true, "versions": { "mj-zana/console": "2.14.0" } } },
         { "type": "path", "url": "../zana-events", "options": { "symlink": true, "versions": { "mj-zana/events": "2.14.0" } } },
         { "type": "path", "url": "../zana-http", "options": { "symlink": true, "versions": { "mj-zana/http": "2.14.0" } } },
-        { "type": "path", "url": "../zana-routing", "options": { "symlink": true, "versions": { "mj-zana/routing": "2.14.0" } } },
+        { "type": "path", "url": "../zana-routing", "options": { "symlink": true, "versions": { "mj-zana/routing": "2.21.0" } } },
         { "type": "path", "url": "../zana-session", "options": { "symlink": true, "versions": { "mj-zana/session": "2.14.0" } } }
     ],
     "scripts": {

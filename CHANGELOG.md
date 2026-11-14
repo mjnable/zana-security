@@ -3,6 +3,22 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.21.0 — Unreleased
+
+### Security
+
+- `check` reports, for every route (FE-68, ADR-033), as errors with `security.strict: true` and warnings otherwise:
+  - `security.route_access`: the route does not say who may reach it: `#[RequiresAuthentication]`,
+    `#[RequiresPermission]`, or `#[PublicRoute(reason: '…')]` (mj-zana/routing 2.21);
+  - `security.access_unenforced`: it requires a user, but `AuthorizationMiddleware` is not on the route, so anyone
+    reaches it. Authentication middleware alone does not count: it lets anonymous requests through;
+  - `security.global_middleware`: `AuthorizationMiddleware` or `RateLimitMiddleware` in `http.middleware`, where it runs
+    before routing and enforces nothing;
+  - `security.csrf`: a route that changes data with session sign-in, and no `CsrfMiddleware` or `#[WithoutCsrf]`.
+- `security.rate_limit`, always a warning: a public route that changes data without `#[RateLimit]` and
+  `RateLimitMiddleware`.
+- Requires mj-zana/routing 2.21 or later when it is installed (`conflict`).
+
 ## 2.20.0 — 2026-11-14
 
 ### Security

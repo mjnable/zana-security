@@ -13,6 +13,7 @@ use Zana\Core\ServiceProvider;
 use Zana\Core\Inspection\ApplicationCheck;
 use Zana\Database\ConnectionInterface;
 use Zana\Security\Inspection\RoleAssignmentsCheck;
+use Zana\Security\Inspection\RouteAccessCheck;
 use Zana\Security\Inspection\TwoFactorCheck;
 use Zana\Security\Internal\MissingCache;
 use Zana\Security\Middleware\AuthenticationMiddleware;
@@ -190,7 +191,10 @@ final class SecurityServiceProvider extends ServiceProvider
                 );
             })->uses(ConfigurationInterface::class, CacheInterface::class, RateLimiter::class)
             ->singleton(TwoFactorCheck::class)
-            ->tag(ApplicationCheck::TAG, TwoFactorCheck::class);
+            ->tag(ApplicationCheck::TAG, TwoFactorCheck::class)
+            // 2.21, FE-68: who may reach each route. It reads the router only when mj-zana/routing is installed.
+            ->singleton(RouteAccessCheck::class)
+            ->tag(ApplicationCheck::TAG, RouteAccessCheck::class);
 
         if (interface_exists(SessionInterface::class)) {
             $services
