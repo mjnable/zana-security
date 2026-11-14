@@ -3,6 +3,28 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.25.1 — Unreleased
+
+The owner's review of FE-64, each point first shown on 2.25.0.
+
+### Fixed
+
+- A misconfiguration is always refused, whatever `security.bot.on_unavailable` says: `BotVerdict::misconfigured()`
+  (no or a wrong secret, no HTTP client, no provider) and a verifier that throws. `allow` lets requests through a
+  provider's outage only, never a missing secret.
+- A verifier's exception message is no longer logged: a custom verifier could put the token in it, as one did in a
+  test against 2.25.0. Only structured facts are logged: the kind, the path, the action, the reason codes, the score.
+- The three kinds of failure are logged apart: misconfigured (error), the provider out of reach (warning), not a
+  person (notice, which 2.25.0 did not log).
+- An expected action, or with `security.bot.hostnames` a hostname, that the provider reports but does not return is
+  refused (`action-missing`, `hostname-missing`); 2.25.0 accepted it.
+
+### Added
+
+- `BotClaimsInterface`, optional: whether a verifier's provider reports actions and hostnames. A verifier without it,
+  as written for 2.25.0, keeps working and is held to both. `check` warns where an expected action or hostname cannot
+  be enforced. `FakeBotVerifier` takes `reportsAction` and `reportsHostname`.
+
 ## 2.25.0 — 2026-11-14
 
 ### Added

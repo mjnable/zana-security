@@ -12,6 +12,7 @@ use Zana\Core\Inspection\SecurityRules;
 use Zana\Core\Inspection\Severity;
 use Zana\Routing\Router;
 use Zana\Security\Attribute\VerifyHuman;
+use Zana\Security\Bot\BotClaimsInterface;
 use Zana\Security\Bot\BotVerifierInterface;
 use Zana\Security\Bot\FakeBotVerifier;
 use Zana\Security\Bot\NullBotVerifier;
@@ -101,6 +102,26 @@ final readonly class BotVerificationCheck implements ApplicationCheck
                     security: true,
                 );
             }
+            if ($rule->action !== null && $verifier instanceof BotClaimsInterface && !$verifier->reportsAction()) {
+                $findings[] = new Finding(
+                    'security.bot_verification',
+                    Severity::Warning,
+                    "{$where} expects the action \"{$rule->action}\", but " . $verifier::class . ' does not report actions, so it cannot be enforced.',
+                    $file,
+                    hint: 'Use a provider that reports actions (Turnstile, reCAPTCHA v3), or remove action from #[VerifyHuman].',
+                    security: true,
+                );
+            }
+        }
+
+        if ($verifier instanceof BotClaimsInterface && !$verifier->reportsHostname() && is_array($hostnames) && $hostnames !== []) {
+            $findings[] = new Finding(
+                'security.bot_verification',
+                Severity::Warning,
+                'security.bot.hostnames is set, but ' . $verifier::class . ' does not report hostnames, so a token from another site is not refused for that.',
+                hint: 'Use a provider that reports hostnames, as every one in mj-zana/captcha does.',
+                security: true,
+            );
         }
 
         return $findings;

@@ -9,8 +9,19 @@ namespace Zana\Security\Bot;
  * before a provider is chosen. It verifies nothing, so `check` reports it as
  * an error in production when a route relies on it.
  */
-final readonly class NullBotVerifier implements BotVerifierInterface
+final readonly class NullBotVerifier implements BotVerifierInterface, BotClaimsInterface
 {
+    /** It answers with the action asked for. */
+    public function reportsAction(): bool
+    {
+        return true;
+    }
+
+    public function reportsHostname(): bool
+    {
+        return false;
+    }
+
     public function field(): string
     {
         return 'bot_token';

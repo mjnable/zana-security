@@ -112,41 +112,136 @@ final class BotVerificationTest extends TestCase
         $this->assertSame([['missing-token'], ['missing-token'], ['missing-token'], ['oversized-token']], array_map(static fn (object $e): array => $e instanceof BotVerificationFailed ? $e->reasons : [], $events->events));
     }
 
-    public function testTheScoreAtTheMinimumAndAnUnsaidActionOrSitePass(): void
+    public function testTheScoreAtTheMinimumAndTheSiteInAnyCasePass(): void
     {
-        $middleware = new BotVerificationMiddleware(new FakeBotVerifier(['a' => BotVerdict::human(0.5), 'b' => BotVerdict::human(0.9, 'checkout', 'WWW.Example.com')]), ['www.example.com']);
+        $middleware = new BotVerificationMiddleware(new FakeBotVerifier(['a' => BotVerdict::human(0.5, 'checkout'), 'b' => BotVerdict::human(0.9, 'checkout', 'WWW.Example.com')], reportsHostname: true), ['www.example.com']);
 
-        $this->assertSame(200, $middleware->process(self::post(['bot_token' => 'a']), new Answer())->getStatusCode(), 'at the minimum, no action or site said');
         $this->assertSame(200, $middleware->process(self::post(['bot_token' => 'b']), new Answer())->getStatusCode(), 'the site in any case');
+        $this->expectException(ForbiddenHttpException::class);   // 'a' names no site, and the provider reports sites (2.25.1)
+        $middleware->process(self::post(['bot_token' => 'a']), new Answer());
     }
 
-    public function testAnUnreachableProviderCanBeAllowedAndIsLogged(): void
+    // ── 2.25.1: strict claims ──────────────────────────────────────────────
+
+    /**
+     * @return iterable<string, array{0: BotVerifierInterface, 1: list<string>, 2: list<string>|null}>
+     */
+    public static function claims(): iterable
     {
-        $logger = new SpamLog();
-        $handler = new Answer();
-        $middleware = new BotVerificationMiddleware(new FakeBotVerifier(['t' => BotVerdict::unavailable('timeout')]), onUnavailable: 'allow', logger: $logger);
-
-        $this->assertSame(200, $middleware->process(self::post(['bot_token' => 't']), $handler)->getStatusCode());
-        $this->assertSame(1, $handler->calls);
-        $this->assertSame(['warning: The bot verifier could not be asked about a token.'], $logger->lines);
-        $this->assertSame(['path' => '/checkout', 'reasons' => ['timeout']], $logger->contexts[0]);
+        $noAction = BotVerdict::human(0.9, null, 'www.example.com');
+        $noSite = BotVerdict::human(0.9, 'checkout');
+        yield 'no action, from a provider that reports actions' => [new FakeBotVerifier(['t' => $noAction], reportsHostname: true), ['www.example.com'], ['action-missing']];
+        yield 'no action, from one that cannot' => [new FakeBotVerifier(['t' => $noAction], reportsAction: false, reportsHostname: true), ['www.example.com'], null];
+        yield 'no site, from a provider that reports sites' => [new FakeBotVerifier(['t' => $noSite], reportsHostname: true), ['www.example.com'], ['hostname-missing']];
+        yield 'no site, from one that cannot' => [new FakeBotVerifier(['t' => $noSite]), ['www.example.com'], null];
+        yield 'no site, and none expected' => [new FakeBotVerifier(['t' => $noSite], reportsHostname: true), [], null];
+        // A verifier written for 2.25.0, which does not say what it reports, is held to both.
+        yield 'a 2.25.0 verifier, no action' => [new VerifierFrom2250($noAction), [], ['action-missing']];
+        yield 'a 2.25.0 verifier, no site' => [new VerifierFrom2250($noSite), ['www.example.com'], ['hostname-missing']];
+        yield 'a 2.25.0 verifier, all said' => [new VerifierFrom2250(BotVerdict::human(0.9, 'checkout', 'www.example.com')), ['www.example.com'], null];
     }
 
-    public function testAVerifierThatThrowsIsUnavailableAndSaysWhy(): void
+    /**
+     * @param list<string> $hostnames
+     * @param list<string>|null $refused The reasons, or null when it goes through
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('claims')]
+    public function testExpectationsAreEnforcedStrictlyWhereTheProviderCanMeetThem(BotVerifierInterface $verifier, array $hostnames, ?array $refused): void
+    {
+        $events = new RecordingDispatcher();
+        $middleware = new BotVerificationMiddleware($verifier, $hostnames, events: $events);
+
+        try {
+            $status = $middleware->process(self::post(['bot_token' => 't']), new Answer())->getStatusCode();
+        } catch (ForbiddenHttpException) {
+            $status = 403;
+        }
+
+        $this->assertSame($refused === null ? 200 : 403, $status);
+        $this->assertSame($refused, $events->events === [] ? null : ($events->events[0] instanceof BotVerificationFailed ? $events->events[0]->reasons : []));
+    }
+
+    // ── 2.25.1: misconfiguration, the three kinds in the log, no token ─────
+
+    public function testAMisconfigurationIsRefusedEvenWhenOutagesAreAllowed(): void
+    {
+        foreach ([BotVerdict::misconfigured('invalid-input-secret'), BotVerdict::misconfigured('no-http-client')] as $verdict) {
+            $handler = new Answer();
+            $middleware = new BotVerificationMiddleware(new FakeBotVerifier(['t' => $verdict]), onUnavailable: 'allow');
+            try {
+                $middleware->process(self::post(['bot_token' => 't']), $handler);
+                self::fail('A misconfiguration let a request through.');
+            } catch (ForbiddenHttpException) {
+            }
+            $this->assertSame(0, $handler->calls);
+        }
+        $allowed = new Answer();
+        (new BotVerificationMiddleware(new FakeBotVerifier(['t' => BotVerdict::unavailable('http-503')]), onUnavailable: 'allow'))->process(self::post(['bot_token' => 't']), $allowed);
+        $this->assertSame(1, $allowed->calls, 'an outage is still let through when allowed');
+    }
+
+    public function testTheThreeKindsOfFailureAreLoggedApart(): void
+    {
+        $kinds = [];
+        foreach (['misconfigured' => BotVerdict::misconfigured('invalid-input-secret'), 'unreachable' => BotVerdict::unavailable('http-503'), 'bot' => BotVerdict::bot(['invalid-input-response'])] as $kind => $verdict) {
+            $logger = new SpamLog();
+            try {
+                (new BotVerificationMiddleware(new FakeBotVerifier(['t' => $verdict]), logger: $logger))->process(self::post(['bot_token' => 't']), new Answer());
+            } catch (ForbiddenHttpException) {
+            }
+            $this->assertCount(1, $logger->lines, $kind);
+            $kinds[$kind] = [$logger->lines[0], $logger->contexts[0]['reasons'] ?? null];
+        }
+
+        $this->assertSame([
+            'misconfigured' => ['error: The bot verifier is misconfigured, so no token can be verified; the request is refused.', ['misconfigured', 'invalid-input-secret']],
+            'unreachable' => ['warning: The bot verifier could not reach its provider; the request is refused.', ['unavailable', 'http-503']],
+            'bot' => ['notice: A request was refused: its token did not prove a person.', ['invalid-input-response']],
+        ], $kinds);
+
+        $logger = new SpamLog();
+        (new BotVerificationMiddleware(new FakeBotVerifier(['t' => BotVerdict::unavailable('http-503')]), onUnavailable: 'allow', logger: $logger))->process(self::post(['bot_token' => 't']), new Answer());
+        $this->assertSame(['warning: The bot verifier could not reach its provider; the request is let through (security.bot.on_unavailable).'], $logger->lines);
+    }
+
+    public function testAVerifierThatThrowsIsAMisconfigurationAndItsMessageIsNeverLogged(): void
     {
         $events = new RecordingDispatcher();
         $logger = new SpamLog();
-        $this->expectException(ForbiddenHttpException::class);
+        $handler = new Answer();
         try {
-            (new BotVerificationMiddleware(new ThrowingVerifier(), events: $events, logger: $logger))->process(self::post(['bot_token' => 't']), new Answer());
-        } finally {
-            $event = $events->events[0];
-            $this->assertInstanceOf(BotVerificationFailed::class, $event);
-            $this->assertSame(['unavailable', \RuntimeException::class], $event->reasons);
-            // Found on a real application, where a missing class looked like a provider that was down.
-            $this->assertSame('error: The bot verifier failed; the request is refused.', $logger->lines[0]);
-            $this->assertSame(['path' => '/checkout', 'exception' => \RuntimeException::class, 'message' => 'connection refused'], $logger->contexts[0]);
+            (new BotVerificationMiddleware(new ThrowingVerifier('provider rejected token SECRET-TOKEN-123'), onUnavailable: 'allow', events: $events, logger: $logger))->process(self::post(['bot_token' => 'SECRET-TOKEN-123']), $handler);
+            self::fail('A verifier that threw let a request through.');
+        } catch (ForbiddenHttpException) {
         }
+
+        $this->assertSame(0, $handler->calls, 'refused even with on_unavailable: allow');
+        $this->assertSame(['error: The bot verifier is misconfigured, so no token can be verified; the request is refused.'], $logger->lines);
+        $this->assertSame(['kind' => 'bot_verification', 'path' => '/checkout', 'action' => 'checkout', 'reasons' => ['misconfigured', 'verifier-error.' . \RuntimeException::class], 'score' => null], $logger->contexts[0]);
+        $this->assertStringNotContainsString('SECRET-TOKEN-123', serialize([$logger->lines, $logger->contexts, $events->events]), 'nowhere: neither the log nor the event');
+    }
+
+    public function testTheTokenIsNeverInTheLogOrTheEvent(): void
+    {
+        foreach ([BotVerdict::bot(['invalid-input-response']), BotVerdict::unavailable('http-503'), BotVerdict::misconfigured('no-http-client'), BotVerdict::human(0.1, 'checkout'), BotVerdict::human(0.9, 'login')] as $verdict) {
+            $logger = new SpamLog();
+            $events = new RecordingDispatcher();
+            try {
+                (new BotVerificationMiddleware(new FakeBotVerifier(['TOKEN-XYZ-789' => $verdict]), events: $events, logger: $logger))->process(self::post(['bot_token' => 'TOKEN-XYZ-789']), new Answer());
+            } catch (ForbiddenHttpException) {
+            }
+            $this->assertNotSame([], $logger->lines);
+            $this->assertStringNotContainsString('TOKEN-XYZ-789', serialize([$logger->lines, $logger->contexts, $events->events]));
+        }
+    }
+
+    public function testAVerdictBuiltAsIn2250StillReadsTheSame(): void
+    {
+        $verdict = new BotVerdict(false, null, ['timeout'], null, null, true);   // positional, as 2.25.0 code builds it
+
+        $this->assertTrue($verdict->unavailable);
+        $this->assertFalse($verdict->misconfigured, 'an outage, as before');
+        $this->assertTrue(BotVerdict::misconfigured('x')->unavailable, 'a misconfiguration is unavailable too, for 2.25.0 code that reads only that');
     }
 
     public function testWithoutAVerifierItFailsClosed(): void
@@ -210,6 +305,19 @@ final class BotVerificationTest extends TestCase
         $this->assertSame(Severity::Error, $findings[0]->severity);
         $this->assertStringContainsString(NullBotVerifier::class . ', which answers without asking a provider', $findings[0]->message);
         $this->assertStringContainsString('FakeBotVerifier', $this->check($routes, verifier: new FakeBotVerifier(scores: true), environment: 'production', strict: true)[0]->message);
+    }
+
+    public function testCheckWarnsWhereAnExpectationCannotBeEnforced(): void
+    {
+        $routes = static fn (Router $r) => $r->post('/guarded', [Checkout::class, 'pay'])->middleware(BotVerificationMiddleware::class);
+        $lines = self::lines($this->check($routes, ['security.bot.hostnames' => ['www.example.com']], verifier: new FakeBotVerifier(scores: true, reportsAction: false, reportsHostname: false), strict: true));
+
+        $this->assertSame([
+            'Warning POST /guarded expects the action "checkout", but ' . FakeBotVerifier::class . ' does not report actions, so it cannot be enforced.',
+            'Warning security.bot.hostnames is set, but ' . FakeBotVerifier::class . ' does not report hostnames, so a token from another site is not refused for that.',
+        ], $lines);
+        $this->assertSame([], $this->check($routes, ['security.bot.hostnames' => ['www.example.com']], verifier: new FakeBotVerifier(scores: true, reportsHostname: true), strict: true));
+        $this->assertSame([], $this->check($routes, ['security.bot.hostnames' => ['www.example.com']], verifier: new VerifierFrom2250(BotVerdict::human()), strict: true), 'a 2.25.0 verifier is held to both, so there is nothing to warn about');
     }
 
     public function testSettingsThatCannotBeUsed(): void
@@ -330,6 +438,10 @@ final class Checkout
 
 final class ThrowingVerifier implements BotVerifierInterface
 {
+    public function __construct(private readonly string $message = 'connection refused')
+    {
+    }
+
     public function field(): string
     {
         return 'bot_token';
@@ -342,6 +454,29 @@ final class ThrowingVerifier implements BotVerifierInterface
 
     public function verify(string $token, ?string $clientIp = null, ?string $action = null): BotVerdict
     {
-        throw new \RuntimeException('connection refused');
+        throw new \RuntimeException($this->message);
+    }
+}
+
+/** A verifier as written for 2.25.0: BotVerifierInterface only, no BotClaimsInterface. */
+final class VerifierFrom2250 implements BotVerifierInterface
+{
+    public function __construct(private readonly BotVerdict $verdict)
+    {
+    }
+
+    public function field(): string
+    {
+        return 'bot_token';
+    }
+
+    public function scores(): bool
+    {
+        return true;
+    }
+
+    public function verify(string $token, ?string $clientIp = null, ?string $action = null): BotVerdict
+    {
+        return $this->verdict;
     }
 }
