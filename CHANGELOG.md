@@ -3,7 +3,7 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
-## 2.25.1 — Unreleased
+## 2.25.1 — 2026-11-15
 
 The owner's review of FE-64, each point first shown on 2.25.0.
 
