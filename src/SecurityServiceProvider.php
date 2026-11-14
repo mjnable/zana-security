@@ -7,11 +7,14 @@ namespace Zana\Security;
 use Psr\EventDispatcher\EventDispatcherInterface;
 use Psr\SimpleCache\CacheInterface;
 use Zana\Configuration\ConfigurationInterface;
+use Zana\Console\ConsoleKernel;
 use Zana\Container\Contracts\ServiceCollectionInterface;
 use Zana\Container\Contracts\ServiceResolverInterface;
 use Zana\Core\ServiceProvider;
 use Zana\Core\Inspection\ApplicationCheck;
 use Zana\Database\ConnectionInterface;
+use Zana\Security\Console\ExposureCommand;
+use Zana\Security\Inspection\ExposureCheck;
 use Zana\Security\Inspection\RoleAssignmentsCheck;
 use Zana\Security\Inspection\RouteAccessCheck;
 use Zana\Security\Inspection\TwoFactorCheck;
@@ -52,6 +55,11 @@ use Zana\Session\SessionInterface;
  * registered ScopeHierarchyInterface gives scopes their parents.
  * RoleAssignments (scoped) changes them; the security.role_assignments
  * check reads the table.
+ *
+ * What is exposed (2.23, FE-68 layer 4): security:exposure, with
+ * mj-zana/console, writes security/exposure.json, who may reach each route;
+ * the security.exposure check reports a route that is new or whose access
+ * changed since.
  *
  * Policies are resolved from the container when registered there, otherwise
  * created without arguments. AuthenticationMiddleware needs the application's
@@ -194,7 +202,14 @@ final class SecurityServiceProvider extends ServiceProvider
             ->tag(ApplicationCheck::TAG, TwoFactorCheck::class)
             // 2.21, FE-68: who may reach each route. It reads the router only when mj-zana/routing is installed.
             ->singleton(RouteAccessCheck::class)
-            ->tag(ApplicationCheck::TAG, RouteAccessCheck::class);
+            ->tag(ApplicationCheck::TAG, RouteAccessCheck::class)
+            // 2.23, FE-68 layer 4: the routes against the reviewed list, security/exposure.json.
+            ->singleton(ExposureCheck::class)
+            ->tag(ApplicationCheck::TAG, ExposureCheck::class);
+
+        if (class_exists(ConsoleKernel::class)) {
+            $services->singleton(ExposureCommand::class)->tag(ConsoleKernel::TAG, ExposureCommand::class);
+        }
 
         if (interface_exists(SessionInterface::class)) {
             $services

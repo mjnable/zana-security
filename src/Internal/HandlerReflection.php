@@ -60,6 +60,22 @@ final class HandlerReflection
     }
 
     /**
+     * Where the handler is written, for a finding of `check`: the file and
+     * line of its method or closure, else the file of its class.
+     */
+    public static function location(mixed $handler): ?string
+    {
+        foreach (array_reverse(self::targets($handler)) as $target) {   // the method or closure first, then the class
+            $file = $target->getFileName();
+            if ($file !== false) {
+                return str_replace('\\', '/', $file) . ($target instanceof \ReflectionClass ? '' : ':' . $target->getStartLine());
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * @param class-string $class
      *
      * @return list<\ReflectionClass<object>|\ReflectionMethod>

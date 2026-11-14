@@ -173,14 +173,7 @@ final readonly class RouteAccessCheck implements ApplicationCheck
      */
     private static function file(\Closure|string|array $handler): ?string
     {
-        foreach (array_reverse(HandlerReflection::targets($handler)) as $target) {   // the method or closure first, then the class
-            $file = $target->getFileName();
-            if ($file !== false) {
-                return str_replace('\\', '/', $file) . ($target instanceof \ReflectionClass ? '' : ':' . $target->getStartLine());
-            }
-        }
-
-        return null;
+        return HandlerReflection::location($handler);
     }
 
     private static function short(string $class): string

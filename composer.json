@@ -12,6 +12,7 @@
         "psr/simple-cache": "^3.0"
     },
     "require-dev": {
+        "mj-zana/console": "^2.0",
         "mj-zana/database": "^2.12",
         "mj-zana/events": "^2.0",
         "mj-zana/routing": "^2.0",
@@ -21,7 +22,8 @@
     },
     "suggest": {
         "mj-zana/session": "For session login: SessionLogin and SessionAuthenticationMiddleware",
-        "mj-zana/database": "For role assignments in a table: DatabaseRoleAssignmentStore (2.17)"
+        "mj-zana/database": "For role assignments in a table: DatabaseRoleAssignmentStore (2.17)",
+        "mj-zana/console": "For security:exposure, which writes the reviewed list of who may reach each route (2.23)"
     },
     "conflict": {
         "mj-zana/routing": "<2.21"
