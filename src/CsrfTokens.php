@@ -6,12 +6,15 @@ namespace Zana\Security;
 
 use Closure;
 use Psr\SimpleCache\CacheInterface;
+use Zana\Cache\AtomicCacheInterface;
 
 /**
  * Stateless CSRF tokens, signed with the TokenSigner, so forms are protected
  * without sessions or cookies. A token names its form, carries a random
  * nonce and expires. With a PSR-16 cache and $singleUse, a token is accepted
- * once.
+ * once: also by requests at the same instant when the cache can add
+ * atomically (2.26, S35, mj-zana/cache's AtomicCacheInterface); with another
+ * cache, such requests can each be accepted, and `check` warns.
  *
  *     <input type="hidden" name="_token" value="<?= $csrf->issue('contact') ?>">
  *     <input type="hidden" name="_form" value="contact">
@@ -100,6 +103,9 @@ final readonly class CsrfTokens
 
         if ($this->singleUse && $this->cache !== null) {
             $key = 'zana.csrf.' . hash('xxh128', $nonce);
+            if ($this->cache instanceof AtomicCacheInterface) {
+                return $this->cache->add($key, true, $this->lifetime);   // the first request to add it wins (2.26, S35)
+            }
             if ($this->cache->has($key)) {
                 return false;
             }

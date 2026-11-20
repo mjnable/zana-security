@@ -3,6 +3,19 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.26.0 — Unreleased
+
+### Security
+
+- Rate limits held only one request at a time: the count was read, then written, so requests at the same instant all
+  read the same count. Twenty sent at once passed a limit of five, the limit on sign-in attempts included. On a cache
+  implementing mj-zana/cache's `AtomicCacheInterface` (every Zana store), `RateLimiter` now increments first and a
+  refused attempt takes its count back, so attempts take turns and limits count as before.
+- A single-use CSRF token could be accepted more than once by requests at the same instant. On such a cache it is now
+  claimed with `add()`, once.
+- The `security.atomic_cache` check, a warning: the application's cache cannot add or count atomically while a rate
+  limit, sign-in, single-use tokens or the spam rules rely on it. With such a cache the old behaviour remains.
+
 ## 2.25.1 — 2026-11-15
 
 The owner's review of FE-64, each point first shown on 2.25.0.

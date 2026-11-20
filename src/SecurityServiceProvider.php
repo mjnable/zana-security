@@ -18,6 +18,7 @@ use Zana\Security\Console\ExposureCommand;
 use Zana\Security\Inspection\ExposureCheck;
 use Zana\Security\Inspection\RoleAssignmentsCheck;
 use Zana\Security\Bot\BotVerifierInterface;
+use Zana\Security\Inspection\AtomicCacheCheck;
 use Zana\Security\Inspection\BotVerificationCheck;
 use Zana\Security\Inspection\SpamRulesCheck;
 use Zana\Security\Middleware\BotVerificationMiddleware;
@@ -211,6 +212,9 @@ final class SecurityServiceProvider extends ServiceProvider
             })->uses(ConfigurationInterface::class, BotVerifierInterface::class, EventDispatcherInterface::class, LoggerInterface::class)
             ->singleton(BotVerificationCheck::class)
             ->tag(ApplicationCheck::TAG, BotVerificationCheck::class)
+            // 2.26, S34, S35: limits and single-use tokens hold under concurrency only on an atomic cache.
+            ->singleton(AtomicCacheCheck::class)
+            ->tag(ApplicationCheck::TAG, AtomicCacheCheck::class)
             // Scoped, so the user provider may be scoped like other repositories (FE-40)
             ->scoped(PasswordResetTokens::class, static function (ServiceResolverInterface $r): PasswordResetTokens {
                 $signer = $r->get(TokenSigner::class);

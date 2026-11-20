@@ -6,6 +6,7 @@ namespace Zana\Security\RateLimit;
 
 use Closure;
 use Psr\SimpleCache\CacheInterface;
+use Zana\Cache\AtomicCacheInterface;
 
 /**
  * Counts attempts per key in a PSR-16 cache (FE-10):
@@ -17,8 +18,15 @@ use Psr\SimpleCache\CacheInterface;
  * - "sliding" weighs the previous window by how much of it still overlaps the
  *   last $window seconds, which smooths that burst.
  *
- * Keys are hashed, so client addresses are never stored. Counts are not
- * atomic: under heavy concurrency a few extra attempts may pass.
+ * Keys are hashed, so client addresses are never stored.
+ *
+ * Counts are atomic with a cache that can count atomically (2.26, S34):
+ * mj-zana/cache's AtomicCacheInterface, which every Zana store implements.
+ * Each attempt increments first, and one beyond the limit takes its count
+ * back, so attempts at the same instant take turns. With another PSR-16
+ * cache, the count is read and then written: attempts that read before any
+ * writes all pass (twenty at once passed a limit of five), and `check` warns
+ * (security.atomic_cache).
  */
 final readonly class RateLimiter
 {
@@ -71,12 +79,26 @@ final readonly class RateLimiter
         $hash = hash('xxh128', $key);
         $currentKey = self::PREFIX . $hash . '.' . $current;
 
-        $count = $this->count($currentKey);
-        $weighted = $count;
+        $carried = 0;
         if ($strategy === 'sliding') {
             $previous = $this->count(self::PREFIX . $hash . '.' . ($current - 1));
-            $weighted = $count + (int) floor($previous * ($window - $elapsed) / $window);
+            $carried = (int) floor($previous * ($window - $elapsed) / $window);
         }
+
+        if ($record && $this->cache instanceof AtomicCacheInterface) {
+            // Count first, then decide: attempts at the same instant each get their own number (2.26, S34).
+            $count = $this->cache->increment($currentKey, 1, $window * 2) - 1;
+            if ($count + $carried >= $max) {
+                $this->cache->increment($currentKey, -1, $window * 2);   // a refused attempt is not counted, as before
+
+                return new RateLimitResult(false, $max, 0, $resetAfter);
+            }
+
+            return new RateLimitResult(true, $max, max(0, $max - $count - $carried - 1), $resetAfter);
+        }
+
+        $count = $this->count($currentKey);
+        $weighted = $count + $carried;
 
         if ($weighted >= $max) {
             return new RateLimitResult(false, $max, 0, $resetAfter);

@@ -2,7 +2,14 @@
     "name": "mj-zana/security",
     "description": "Password hashing, signed bearer tokens, request authentication and authorization by roles, permissions and policies for Zana applications",
     "type": "library",
-    "keywords": ["zana", "security", "authentication", "authorization", "password", "token"],
+    "keywords": [
+        "zana",
+        "security",
+        "authentication",
+        "authorization",
+        "password",
+        "token"
+    ],
     "license": "MIT",
     "require": {
         "php": "^8.5",
@@ -12,6 +19,7 @@
         "psr/simple-cache": "^3.0"
     },
     "require-dev": {
+        "mj-zana/cache": "^2.26",
         "mj-zana/console": "^2.0",
         "mj-zana/database": "^2.12",
         "mj-zana/events": "^2.0",
@@ -23,7 +31,8 @@
     "suggest": {
         "mj-zana/session": "For session login: SessionLogin and SessionAuthenticationMiddleware",
         "mj-zana/database": "For role assignments in a table: DatabaseRoleAssignmentStore (2.17)",
-        "mj-zana/console": "For security:exposure, which writes the reviewed list of who may reach each route (2.23)"
+        "mj-zana/console": "For security:exposure, which writes the reviewed list of who may reach each route (2.23)",
+        "mj-zana/cache": "Caches whose add() and increment() are atomic, so rate limits and single-use tokens hold under concurrent requests (2.26)"
     },
     "conflict": {
         "mj-zana/routing": "<2.21"
@@ -37,19 +46,121 @@
         "psr-4": {
             "Zana\\Security\\Tests\\": "tests/"
         },
-        "files": ["tests/Fixtures.php"]
+        "files": [
+            "tests/Fixtures.php"
+        ]
     },
     "repositories": [
-        { "type": "path", "url": "../zana-container", "options": { "symlink": true, "versions": { "mj-zana/container": "2.14.0" } } },
-        { "type": "path", "url": "../zana-configuration", "options": { "symlink": true, "versions": { "mj-zana/configuration": "2.14.0" } } },
-        { "type": "path", "url": "../zana-core", "options": { "symlink": true, "versions": { "mj-zana/core": "2.21.0" } } },
-        { "type": "path", "url": "../zana-ddd", "options": { "symlink": true, "versions": { "mj-zana/ddd": "2.14.0" } } },
-        { "type": "path", "url": "../zana-database", "options": { "symlink": true, "versions": { "mj-zana/database": "2.14.0" } } },
-        { "type": "path", "url": "../zana-console", "options": { "symlink": true, "versions": { "mj-zana/console": "2.14.0" } } },
-        { "type": "path", "url": "../zana-events", "options": { "symlink": true, "versions": { "mj-zana/events": "2.14.0" } } },
-        { "type": "path", "url": "../zana-http", "options": { "symlink": true, "versions": { "mj-zana/http": "2.14.0" } } },
-        { "type": "path", "url": "../zana-routing", "options": { "symlink": true, "versions": { "mj-zana/routing": "2.21.0" } } },
-        { "type": "path", "url": "../zana-session", "options": { "symlink": true, "versions": { "mj-zana/session": "2.14.0" } } }
+        {
+            "type": "path",
+            "url": "../zana-container",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "mj-zana/container": "2.26.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../zana-configuration",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "mj-zana/configuration": "2.26.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../zana-core",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "mj-zana/core": "2.26.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../zana-ddd",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "mj-zana/ddd": "2.26.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../zana-database",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "mj-zana/database": "2.26.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../zana-console",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "mj-zana/console": "2.26.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../zana-events",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "mj-zana/events": "2.26.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../zana-http",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "mj-zana/http": "2.26.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../zana-routing",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "mj-zana/routing": "2.26.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../zana-session",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "mj-zana/session": "2.26.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../zana-cache",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "mj-zana/cache": "2.26.0"
+                }
+            }
+        }
     ],
     "scripts": {
         "test": "phpunit",
