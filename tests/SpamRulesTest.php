@@ -6,6 +6,8 @@ namespace Zana\Security\Tests;
 
 use Nyholm\Psr7\Response;
 use Nyholm\Psr7\ServerRequest;
+use Zana\Cache\ArrayCache as ZanaArrayCache;
+use Zana\Security\Spam\Verdict;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Psr\EventDispatcher\EventDispatcherInterface;
@@ -375,6 +377,90 @@ final class SpamRulesTest extends TestCase
         $this->assertSame(200, $middleware->process($post, new Answer())->getStatusCode(), 'and again after a 422: still not a repeat');
         $this->expectException(ForbiddenHttpException::class);
         $middleware->process($post, new Answer());   // now it was accepted: a repeat
+    }
+
+    // ── 2.29: claimed in one step ──────────────────────────────────────────
+
+    public function testAPostHeldBetweenJudgingAndClaimingIsSpamAndTheOtherHoldIsKept(): void
+    {
+        $guard = $this->guard(['contact' => ['duplicate_minutes' => 10]], new ZanaArrayCache());
+        $first = self::sent('Two tickets please');
+        $second = self::sent('Two tickets please');
+
+        // Both judged before either claims: as two requests at the same instant would be.
+        $firstVerdict = $guard->judge('contact', $first);
+        $secondVerdict = $guard->judge('contact', $second);
+        $this->assertFalse($firstVerdict->spam || $secondVerdict->spam, 'nothing held yet');
+
+        $this->assertFalse($guard->claim('contact', $first, $firstVerdict)->spam, 'the first claims it');
+        $lost = $guard->claim('contact', $second, $secondVerdict);
+        $this->assertTrue($lost->spam, 'the second finds it held');
+        $this->assertSame(['repeated: the same text was accepted from this client within the last 10 minute(s)'], $lost->recordable());
+
+        // The second request's release frees nothing it did not claim: the first's hold stands.
+        $guard->release('contact', $second);
+        $this->assertTrue($guard->judge('contact', self::sent('Two tickets please'))->spam);
+
+        // The first's handler fails: its own hold is freed, and the text may be sent again.
+        $guard->release('contact', $first);
+        $this->assertFalse($guard->judge('contact', self::sent('Two tickets please'))->spam);
+    }
+
+    public function testAClaimIsNeverCountedTwiceWithWhatTheRulesFound(): void
+    {
+        $guard = $this->guard(['contact' => ['duplicate_minutes' => 10, 'threshold' => 3]], new ZanaArrayCache());
+        $held = self::sent('Again');
+        $guard->claim('contact', $held, $guard->judge('contact', $held));
+
+        $again = self::sent('Again');
+        $judged = $guard->judge('contact', $again);
+        $this->assertSame(1, $judged->points, 'check() found it');
+        $this->assertSame(1, $guard->claim('contact', $again, $judged)->points, 'and the claim, finding the same, adds nothing');
+    }
+
+    public function testWhenAClaimMakesThePostSpamWhatItHeldIsReleased(): void
+    {
+        $holds = new HoldsAndReleases();
+        $guard = new SpamGuard(['contact' => ['duplicate_minutes' => 10, 'rules' => [HoldsAndReleases::class]]], new ZanaArrayCache(), static fn (string $c): SpamRuleInterface => $holds, fn (): int => $this->now);
+        $other = self::sent('Same words');
+        $guard->claim('contact', $other, $guard->judge('contact', $other));   // another request holds it
+
+        $mine = self::sent('Same words');
+        $verdict = $guard->claim('contact', $mine, new Verdict(false, 0, 1, []));
+
+        $this->assertTrue($verdict->spam);
+        $this->assertSame(['reserve', 'reserve', 'release'], $holds->calls, 'the application\'s reserving rule held it, then let it go');
+        $this->assertTrue($guard->judge('contact', self::sent('Same words'))->spam, 'the other request\'s hold is still there');
+    }
+
+    public function testTheMiddlewareRefusesAPostAnotherRequestClaimedRightAfterItWasRead(): void
+    {
+        // The other request claims the same text after this one's rules read the cache, and before it claims.
+        $cache = new ClaimsAfterRead(new ZanaArrayCache());
+        $middleware = new SpamGuardMiddleware($this->guard(['contact' => ['duplicate_minutes' => 10]], $cache));
+
+        $this->expectException(ForbiddenHttpException::class);
+        $middleware->process(self::post(['message' => 'Two tickets please']), new Answer());
+    }
+
+    public function testEmptyFormsAreNeverClaimed(): void
+    {
+        $guard = $this->guard(['contact' => ['duplicate_minutes' => 10]], new ZanaArrayCache());
+        foreach ([1, 2] as $_) {
+            $empty = new Submission('contact', ['message' => '   '], 'ip:198.51.100.7');
+            $this->assertFalse($guard->claim('contact', $empty, $guard->judge('contact', $empty))->spam, 'an empty form is not a message, nor its repeat');
+        }
+    }
+
+    public function testOnACacheThatCannotAddTheClaimReservesAsBefore(): void
+    {
+        $cache = new SpamCache();
+        $guard = $this->guard(['contact' => ['duplicate_minutes' => 10]], $cache);
+        $first = self::sent('Two tickets please');
+
+        $this->assertFalse($guard->claim('contact', $first, $guard->judge('contact', $first))->spam);
+        $this->assertCount(1, $cache->values, 'reserved with set(), as in 2.25');
+        $this->assertFalse($guard->claim('contact', self::sent('Two tickets please'), new Verdict(false, 0, 1, []))->spam, 'with get() then set(), the race is not closed: check warns');
     }
 
     public function testRulesThatOnlyRecordKeepTheir224Meaning(): void
@@ -762,6 +848,112 @@ final class CallsBack implements RequestHandlerInterface
         ($this->during)();
 
         return new Response(303, ['Location' => '/thanks']);
+    }
+}
+
+/**
+ * A Zana cache on which another request claims each spam key right after this one read it: the instant between
+ * judging and claiming, made to happen every time.
+ */
+final class ClaimsAfterRead implements \Zana\Cache\AtomicCacheInterface
+{
+    public function __construct(private readonly ZanaArrayCache $inner)
+    {
+    }
+
+    public function get(string $key, mixed $default = null): mixed
+    {
+        $value = $this->inner->get($key, $default);
+        if (str_starts_with($key, 'zana_spam_')) {
+            $this->inner->add($key, PHP_INT_MAX, 600);   // the other request
+        }
+
+        return $value;
+    }
+
+    public function add(string $key, mixed $value, null|int|\DateInterval $ttl = null): bool
+    {
+        return $this->inner->add($key, $value, $ttl);
+    }
+
+    public function increment(string $key, int $by = 1, null|int|\DateInterval $ttl = null): int
+    {
+        return $this->inner->increment($key, $by, $ttl);
+    }
+
+    public function remember(string $key, null|int|\DateInterval $ttl, callable $callback): mixed
+    {
+        return $this->inner->remember($key, $ttl, $callback);
+    }
+
+    public function pull(string $key, mixed $default = null): mixed
+    {
+        return $this->inner->pull($key, $default);
+    }
+
+    public function set(string $key, mixed $value, null|int|\DateInterval $ttl = null): bool
+    {
+        return $this->inner->set($key, $value, $ttl);
+    }
+
+    public function delete(string $key): bool
+    {
+        return $this->inner->delete($key);
+    }
+
+    public function clear(): bool
+    {
+        return $this->inner->clear();
+    }
+
+    public function getMultiple(iterable $keys, mixed $default = null): iterable
+    {
+        return $this->inner->getMultiple($keys, $default);
+    }
+
+    /**
+     * @param iterable<mixed> $values
+     */
+    public function setMultiple(iterable $values, null|int|\DateInterval $ttl = null): bool
+    {
+        return $this->inner->setMultiple($values, $ttl);
+    }
+
+    public function deleteMultiple(iterable $keys): bool
+    {
+        return $this->inner->deleteMultiple($keys);
+    }
+
+    public function has(string $key): bool
+    {
+        return $this->inner->has($key);
+    }
+}
+
+/** An application's reserving rule that does not claim (2.25's interface), and says what it was asked. */
+final class HoldsAndReleases implements \Zana\Security\Spam\ReservingSpamRuleInterface
+{
+    /** @var list<string> */
+    public array $calls = [];
+
+    public function check(Submission $submission): ?Signal
+    {
+        return null;
+    }
+
+    public function accepted(Submission $submission): void
+    {
+        $this->calls[] = 'accepted';
+    }
+
+    public function reserve(Submission $submission): void
+    {
+        $this->calls[] = 'reserve';
+    }
+
+    public function release(Submission $submission): void
+    {
+        $this->calls[] = 'release';
     }
 }
 

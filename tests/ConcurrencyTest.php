@@ -39,6 +39,22 @@ final class ConcurrencyTest extends TestCase
         $this->assertSame(1, $this->race('token', 20), 'S35: up to six were accepted before');
     }
 
+    /**
+     * 2.29: the spam rules' documented race. Twenty identical posts at the same instant, judged and reserved as
+     * before 2.29, pass more than once; judged and claimed in one step, once.
+     */
+    public function testTwentyIdenticalPostsAtOncePassTheRepeatRuleOnce(): void
+    {
+        $before = $this->race('spam-reserve', 20);
+        fwrite(STDERR, "\nIdentical posts passing at the same instant: {$before} of 20 reserved as before 2.29, ");
+        $after = $this->race('spam', 20);
+        fwrite(STDERR, "{$after} of 20 claimed\n");
+
+        // How many passed before depends on the machine's timing (5 and 20 of 20 here, 2026-11-21), so it is shown,
+        // not asserted; once claimed, one passes.
+        $this->assertSame(1, $after);
+    }
+
     public function testOnAnAtomicCacheTheLimiterCountsAsBefore(): void
     {
         $limiter = new RateLimiter(new ZanaArrayCache(clock: fn (): int => $this->now), fn (): int => $this->now);
@@ -116,7 +132,7 @@ final class ConcurrencyTest extends TestCase
     /**
      * Runs $n processes that act at the same instant on one FileCache.
      *
-     * @param 'limit'|'token' $mode A rate limit of 5, or one single-use token
+     * @param 'limit'|'token'|'spam'|'spam-reserve' $mode A rate limit of 5, one single-use token, or one message judged and claimed or reserved
      * @return int How many passed
      */
     private function race(string $mode, int $n): int

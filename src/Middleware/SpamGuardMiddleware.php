@@ -53,6 +53,11 @@ final readonly class SpamGuardMiddleware implements MiddlewareInterface
         $profile = $this->guard->profile($rules->form);
         $submission = Submission::fromRequest($request, $rules->form, $profile->fields, $this->honeypot, $this->security?->user()?->identifier());
         $verdict = $this->guard->judge($rules->form, $submission);
+        if (!$verdict->spam) {
+            // 2.25: held while the handler runs, so the same text sent meanwhile is caught; 2.29: in one step, so
+            // the same text sent at the same instant is caught too.
+            $verdict = $this->guard->claim($rules->form, $submission, $verdict);
+        }
         if ($verdict->spam) {
             $ip = $request->getAttribute('client_ip') ?? $request->getServerParams()['REMOTE_ADDR'] ?? '';
             // recordable(), not reasons(): an application's rule may have put the visitor's text in its reason (2.24.1).
@@ -64,8 +69,6 @@ final readonly class SpamGuardMiddleware implements MiddlewareInterface
             throw new ForbiddenHttpException('The form could not be accepted.');
         }
 
-        // 2.25: held while the handler runs, so the same text sent meanwhile is caught.
-        $this->guard->reserve($rules->form, $submission);
         try {
             $response = $handler->handle($request);
         } catch (\Throwable $e) {

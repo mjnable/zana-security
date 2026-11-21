@@ -6,7 +6,8 @@ namespace Zana\Security\Spam\Rule;
 
 use Closure;
 use Psr\SimpleCache\CacheInterface;
-use Zana\Security\Spam\ReservingSpamRuleInterface;
+use Zana\Cache\AtomicCacheInterface;
+use Zana\Security\Spam\ClaimingSpamRuleInterface;
 use Zana\Security\Spam\Signal;
 use Zana\Security\Spam\Submission;
 
@@ -18,9 +19,11 @@ use Zana\Security\Spam\Submission;
  * Only a hash is kept, in the PSR-16 cache, never the text. Since 2.25 the
  * hash is reserved as soon as the rules let a post through, and released if
  * the handler fails, so the same text sent while the first is still being
- * handled is caught; only two reads within the same instant can both pass.
+ * handled is caught. Since 2.29 it is claimed in one step on a Zana cache, so
+ * two posts at the same instant cannot both pass either; on another PSR-16
+ * cache they still can, and `check` warns (security.atomic_cache).
  */
-final readonly class RepeatedContent implements ReservingSpamRuleInterface
+final readonly class RepeatedContent implements ClaimingSpamRuleInterface
 {
     private Closure $now;
 
@@ -58,9 +61,12 @@ final readonly class RepeatedContent implements ReservingSpamRuleInterface
             return null;
         }
 
-        return is_int($until) && $until > ($this->now)()
-            ? new Signal('repeated', 1, 'the same text was accepted ' . ($this->scope === 'everyone' ? '' : 'from this client ') . "within the last {$this->minutes} minute(s)")
-            : null;
+        return is_int($until) && $until > ($this->now)() ? $this->signal() : null;
+    }
+
+    private function signal(): Signal
+    {
+        return new Signal('repeated', 1, 'the same text was accepted ' . ($this->scope === 'everyone' ? '' : 'from this client ') . "within the last {$this->minutes} minute(s)");
     }
 
     /**
@@ -88,6 +94,36 @@ final readonly class RepeatedContent implements ReservingSpamRuleInterface
     public function reserve(Submission $submission): void
     {
         $this->accepted($submission);
+    }
+
+    /**
+     * Holds the hash in one step (2.29): on a cache that adds atomically
+     * (mj-zana/cache's AtomicCacheInterface), only the first of two identical
+     * posts at the same instant gets it, and the other gets the signal. On
+     * another cache, it reserves as before and finds nothing. A cache that
+     * cannot be written finds nothing either: a real message is not refused
+     * because the cache is down.
+     */
+    public function claim(Submission $submission): ?Signal
+    {
+        $key = $this->key($submission);
+        if ($key === null) {
+            return null;
+        }
+        if (!$this->cache instanceof AtomicCacheInterface) {
+            $this->reserve($submission);
+
+            return null;
+        }
+        try {
+            $claimed = $this->cache->add($key, ($this->now)() + $this->minutes * 60, $this->minutes * 60);
+        } catch (\Throwable $e) {
+            $this->failed($e, 'write');
+
+            return null;
+        }
+
+        return $claimed ? null : $this->signal();
     }
 
     /**

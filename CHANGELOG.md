@@ -3,6 +3,22 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.29.0 — Unreleased
+
+### Security
+
+- The spam rules' documented race: two identical posts read within the same instant could both pass the rule for
+  repeated text, as it read the cache, then reserved the post. `SpamGuardMiddleware` now claims the post in one step
+  after the rules let it through (`SpamGuard::claim()`), and refuses it when another request holds it. On a Zana cache
+  (`add()`), twenty identical posts at once pass once; reserved as before, 5 and 20 of 20 passed. On another PSR-16
+  cache, the rule reserves as before, and `check` warns (`security.atomic_cache`).
+- `ClaimingSpamRuleInterface` (extends `ReservingSpamRuleInterface`): `claim()` reserves, or returns a `Signal` when
+  another request holds the same thing. `RepeatedContent` implements it. An application's reserving rule from 2.25
+  keeps working: it is reserved as before.
+- A request refused by a claim releases only what it held itself, and a later `release()` of a claimed submission
+  frees only what it claimed, never another request's hold. A claim that finds what the rules found already is not
+  counted twice. A rule that fails to claim is logged, and the post goes on.
+
 ## 2.28.0 — 2026-11-21
 
 ### Security

@@ -29,6 +29,9 @@ final class SpamGuard
     /** @var array<string, SpamProfile> */
     private array $profiles = [];
 
+    /** @var \WeakMap<Submission, list<ReservingSpamRuleInterface>> What each submission claimed (2.29) */
+    private \WeakMap $claimed;
+
     /** The rules whose reasons hold no text the visitor sent, and so may be recorded (2.24.1). */
     private const array OWN_RULES = [TooManyLinks::class, BlockedTerms::class, RepeatedContent::class, FixedScore::class];
 
@@ -48,6 +51,7 @@ final class SpamGuard
         private readonly ?Closure $now = null,
         private readonly ?LoggerInterface $logger = null,
     ) {
+        $this->claimed = new \WeakMap();
     }
 
     /**
@@ -141,12 +145,64 @@ final class SpamGuard
     }
 
     /**
+     * Holds what the rules let through, in one step for the rules that claim
+     * (2.29), and gives the verdict with what the claims found: another
+     * request at the same instant that holds the same post. When that makes
+     * the post spam, what this request claimed is released again. Either way,
+     * a later release() of this submission frees only what it claimed, never
+     * what another request holds. A rule that fails is logged: the post goes
+     * on. The rules that reserve without claiming reserve, as with reserve().
+     */
+    public function claim(string $form, Submission $submission, Verdict $verdict): Verdict
+    {
+        $profile = $this->profile($form);
+        $signals = $verdict->signals;
+        $recordable = $verdict->recordable;
+        $points = $verdict->points;
+        $held = [];
+        foreach ($this->rules($profile) as $rule) {
+            if (!$rule instanceof ReservingSpamRuleInterface) {
+                continue;
+            }
+            try {
+                $signal = $rule instanceof ClaimingSpamRuleInterface ? $rule->claim($submission) : null;
+                if (!$rule instanceof ClaimingSpamRuleInterface) {
+                    $rule->reserve($submission);
+                }
+            } catch (\Throwable $e) {
+                $this->logger?->error('A spam rule failed to claim a form post; the post went on.', ['form' => $form, 'rule' => $rule::class, 'exception' => $e::class]);
+                continue;
+            }
+            if ($signal === null || $signal->points <= 0) {
+                $held[] = $rule;
+            } elseif (!in_array($signal, $signals, false)) {   // check() may have found it already: never counted twice
+                $signals[] = $signal;
+                $recordable[] = self::recordable($rule, $signal);
+                $points += $signal->points;
+            }
+        }
+        $this->claimed[$submission] = $held;
+
+        $judged = new Verdict($points >= $profile->threshold, $points, $profile->threshold, $signals, $recordable);
+        if ($judged->spam) {
+            $this->release($form, $submission);
+        }
+
+        return $judged;
+    }
+
+    /**
      * The handler answered with an error or failed: frees what reserve() held
-     * (2.25), so the corrected form is not taken for a repeat.
+     * (2.25), so the corrected form is not taken for a repeat. For a
+     * submission claimed with claim() (2.29), only what it claimed.
      */
     public function release(string $form, Submission $submission): void
     {
-        $this->each($form, static fn (ReservingSpamRuleInterface $rule) => $rule->release($submission), 'release');
+        $held = $this->claimed[$submission] ?? null;
+        if ($held !== null) {
+            $this->claimed[$submission] = [];   // released: a second release frees nothing, least of all another's hold
+        }
+        $this->each($form, static fn (ReservingSpamRuleInterface $rule) => $held === null || in_array($rule, $held, true) ? $rule->release($submission) : null, 'release');
     }
 
     /**
