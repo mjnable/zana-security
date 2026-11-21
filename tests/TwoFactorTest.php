@@ -245,6 +245,7 @@ final class TwoFactorTest extends TestCase
         $this->assertTrue($login->start('ada@example.com', 'secret-pass')->needsSecondFactor());
         $result = $login->completeSecondFactor($this->code($secret), remember: true);
         $this->assertNotNull($result->deviceToken);
+        $this->assertNotNull($result->knownDevice, '2.28: remembering the device keeps the known-device token too');
 
         [$again] = $this->login($twoFactor);
         $this->assertTrue($again->start('ada@example.com', 'secret-pass', deviceToken: $result->deviceToken)->signedIn(), 'a remembered device');
@@ -314,7 +315,7 @@ final class TwoFactorTest extends TestCase
             $this->events[] = $e;
         }));
 
-        return [new SessionLogin($this->users, new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT), $session, $context, events: $events, twoFactor: $twoFactor, clock: fn (): int => $this->now), $session, $context];
+        return [new SessionLogin($this->users, new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT), $session, $context, events: $events, twoFactor: $twoFactor, clock: fn (): int => $this->now, knownDevices: new TokenSigner(str_repeat('s', 32), fn (): int => $this->now)), $session, $context];
     }
 
     private static function signedInId(SecurityContext $context): ?string

@@ -143,15 +143,23 @@ final class SecurityServiceProvider extends ServiceProvider
                     $config->bool('security.csrf.single_use', false),
                     $config->int('security.csrf.minimum_age', 0),
                     $config->has('security.csrf.honeypot') ? $config->string('security.csrf.honeypot') : null,
+                    binding: $r->get(CsrfBinding::class),
                 );
-            })->uses(ConfigurationInterface::class, CacheInterface::class, TokenSigner::class)
+            })->uses(ConfigurationInterface::class, CacheInterface::class, TokenSigner::class, CsrfBinding::class)
+            // 2.28: tokens tied to the visitor's session, opt-in.
+            ->singleton(CsrfBinding::class, static fn (ServiceResolverInterface $r): CsrfBinding => new CsrfBinding(
+                $r->get(ConfigurationInterface::class)->bool('security.csrf.bind_to_session', false),
+            ))->uses(ConfigurationInterface::class)
             ->scoped(CsrfMiddleware::class, static function (ServiceResolverInterface $r): CsrfMiddleware {
                 $config = $r->get(ConfigurationInterface::class);
                 $tokens = $r->get(CsrfTokens::class);
-                assert($tokens instanceof CsrfTokens);
+                $binding = $r->get(CsrfBinding::class);
+                assert($tokens instanceof CsrfTokens && $binding instanceof CsrfBinding);
+                $sessions = class_exists(SessionContext::class) && $r->has(SessionContext::class) ? $r->get(SessionContext::class) : null;
+                $session = $sessions instanceof SessionContext ? static fn (): ?SessionInterface => $sessions->has() ? $sessions->session() : null : null;
 
-                return new CsrfMiddleware($tokens, $config->has('security.csrf.spam_redirect') ? $config->string('security.csrf.spam_redirect') : null);
-            })->uses(ConfigurationInterface::class, CsrfTokens::class)
+                return new CsrfMiddleware($tokens, $config->has('security.csrf.spam_redirect') ? $config->string('security.csrf.spam_redirect') : null, $binding, $session);
+            })->uses(ConfigurationInterface::class, CsrfTokens::class, CsrfBinding::class)
             ->singleton(RateLimiter::class, static fn (ServiceResolverInterface $r): RateLimiter => new RateLimiter(self::cache($r, 'Rate limiting')))->uses(CacheInterface::class)
             ->scoped(RateLimitMiddleware::class, static function (ServiceResolverInterface $r): RateLimitMiddleware {
                 $limiter = $r->get(RateLimiter::class);
@@ -289,8 +297,25 @@ final class SecurityServiceProvider extends ServiceProvider
                     // A user provider that can hold second factors gets them checked: a password alone never signs such a user in.
                     $twoFactor = $users instanceof TwoFactorUserProviderInterface ? $r->get(TwoFactor::class) : null;
 
-                    return new SessionLogin($users, $hasher, $session, $context, $limiter instanceof RateLimiter ? $limiter : null, $config->int('security.login.max_attempts', 5), $config->int('security.login.window', 900), self::events($r), $twoFactor instanceof TwoFactor ? $twoFactor : null);
-                })->uses(ConfigurationInterface::class, PasswordUserProviderInterface::class, PasswordHasher::class, SessionInterface::class, SecurityContext::class, RateLimiter::class, EventDispatcherInterface::class, TwoFactor::class)
+                    $signer = $r->get(TokenSigner::class);
+                    assert($signer instanceof TokenSigner);
+
+                    return new SessionLogin(
+                        $users,
+                        $hasher,
+                        $session,
+                        $context,
+                        $limiter instanceof RateLimiter ? $limiter : null,
+                        $config->int('security.login.max_attempts', 5),
+                        $config->int('security.login.window', 900),
+                        self::events($r),
+                        $twoFactor instanceof TwoFactor ? $twoFactor : null,
+                        // 2.28: the limit per login from every address, and the "known device" cookie's token.
+                        maxAttemptsPerLogin: $config->has('security.login.max_attempts_per_login') ? $config->int('security.login.max_attempts_per_login') : null,
+                        knownDevices: $signer,
+                        knownDeviceLifetime: $config->int('security.login.known_device_days', 90) * 86_400,
+                    );
+                })->uses(ConfigurationInterface::class, PasswordUserProviderInterface::class, PasswordHasher::class, SessionInterface::class, SecurityContext::class, RateLimiter::class, EventDispatcherInterface::class, TwoFactor::class, TokenSigner::class)
                 ->scoped(SessionAuthenticationMiddleware::class, static function (ServiceResolverInterface $r): SessionAuthenticationMiddleware {
                     $config = $r->get(ConfigurationInterface::class);
                     $sessions = $r->get(SessionContext::class);

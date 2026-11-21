@@ -16,6 +16,9 @@ use Zana\Cache\AtomicCacheInterface;
  * atomically (2.26, S35, mj-zana/cache's AtomicCacheInterface); with another
  * cache, such requests can each be accepted, and `check` warns.
  *
+ * With security.csrf.bind_to_session (2.28), a visitor who has a session
+ * gets tokens tied to it: see CsrfBinding.
+ *
  *     <input type="hidden" name="_token" value="<?= $csrf->issue('contact') ?>">
  *     <input type="hidden" name="_form" value="contact">
  */
@@ -44,6 +47,7 @@ final readonly class CsrfTokens
         public int $minimumAge = 0,
         public ?string $honeypot = null,
         ?Closure $clock = null,
+        private ?CsrfBinding $binding = null,
     ) {
         if ($singleUse && $cache === null) {
             throw new SecurityException('Single-use CSRF tokens need a PSR-16 cache.');
@@ -85,7 +89,13 @@ final readonly class CsrfTokens
 
     public function issue(string $form = self::DEFAULT_FORM): string
     {
-        return $this->signer->issue(self::SUBJECT_PREFIX . $form, $this->lifetime, ['nonce' => bin2hex(random_bytes(16))]);
+        $claims = ['nonce' => bin2hex(random_bytes(16))];
+        $bind = $this->binding?->forIssue();
+        if ($bind !== null) {
+            $claims['bind'] = $bind;   // 2.28: tied to the visitor's session
+        }
+
+        return $this->signer->issue(self::SUBJECT_PREFIX . $form, $this->lifetime, $claims);
     }
 
     public function verify(string $token, string $form = self::DEFAULT_FORM): bool
@@ -98,6 +108,12 @@ final readonly class CsrfTokens
 
         $nonce = $claims->claim('nonce');
         if ($claims->subject !== self::SUBJECT_PREFIX . $form || !is_string($nonce)) {
+            return false;
+        }
+        // 2.28: once the visitor's session has its seed, only a token tied to it passes; before a single use is spent.
+        $expected = $this->binding?->expected();
+        $bind = $claims->claim('bind');
+        if ($expected !== null && !(is_string($bind) && hash_equals($expected, $bind))) {
             return false;
         }
 

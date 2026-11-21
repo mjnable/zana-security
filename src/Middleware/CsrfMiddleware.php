@@ -11,8 +11,10 @@ use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use Zana\Http\Exception\ForbiddenHttpException;
 use Zana\Security\Attribute\WithoutCsrf;
+use Zana\Security\CsrfBinding;
 use Zana\Security\CsrfTokens;
 use Zana\Security\Internal\HandlerReflection;
+use Zana\Session\SessionInterface;
 
 /**
  * Refuses POST, PUT, PATCH and DELETE requests that may come from another
@@ -33,18 +35,38 @@ use Zana\Security\Internal\HandlerReflection;
  * Anti-spam (FE-22): a filled honeypot field, or a form posted sooner than
  * the tokens' minimum age, is treated as a bot. With $spamRedirect the bot
  * gets a 303 to that path, as if it had succeeded; otherwise a 403.
+ *
+ * With security.csrf.bind_to_session (2.28), tokens are tied to the session
+ * of the request: put this middleware after SessionMiddleware, and on the
+ * pages that show the forms too. See CsrfBinding.
  */
 final readonly class CsrfMiddleware implements MiddlewareInterface
 {
     private const array UNSAFE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
 
+    /**
+     * @param (\Closure(): ?SessionInterface)|null $session The request's session, when it has one (2.28)
+     */
     public function __construct(
         private CsrfTokens $tokens,
         private ?string $spamRedirect = null,
+        private ?CsrfBinding $binding = null,
+        private ?\Closure $session = null,
     ) {
     }
 
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
+    {
+        if ($this->binding === null || !$this->binding->enabled()) {
+            return $this->check($request, $handler);
+        }
+        // 2.28: tokens issued and checked while this request runs, its page included, are tied to its session.
+        $session = $this->session === null ? null : ($this->session)();
+
+        return $this->binding->during($session, fn (): ResponseInterface => $this->check($request, $handler));
+    }
+
+    private function check(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
         if (!in_array(strtoupper($request->getMethod()), self::UNSAFE_METHODS, true)
             || $this->hasBearerToken($request)

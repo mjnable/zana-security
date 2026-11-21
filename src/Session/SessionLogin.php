@@ -9,11 +9,13 @@ use Zana\Http\Exception\TooManyRequestsHttpException;
 use Zana\Security\Event\SignedOut;
 use Zana\Security\Event\SignInFailed;
 use Zana\Security\Event\SignInSucceeded;
+use Zana\Security\InvalidTokenException;
 use Zana\Security\PasswordHasher;
 use Zana\Security\PasswordUpgraderInterface;
 use Zana\Security\PasswordUserProviderInterface;
 use Zana\Security\RateLimit\RateLimiter;
 use Zana\Security\SecurityContext;
+use Zana\Security\TokenSigner;
 use Zana\Security\TwoFactor\TwoFactor;
 use Zana\Security\UserInterface;
 use Zana\Session\SessionInterface;
@@ -29,9 +31,18 @@ use Zana\Session\SessionInterface;
  *
  * - A failed attempt never says whether the account exists, and takes as
  *   long when it does not (a password is verified either way).
- * - Attempts are limited per login and per client address
- *   (security.login.max_attempts per security.login.window seconds), and
- *   second-factor attempts per user.
+ * - Attempts are limited per login from one client address
+ *   (security.login.max_attempts per security.login.window seconds), per
+ *   login from every address together (security.login.max_attempts_per_login,
+ *   ten times as many by default), per client address, and second-factor
+ *   attempts per user (2.28). Before 2.28 the first limit was per login from
+ *   every address, so anyone could lock the owner out with five wrong
+ *   passwords; now they lock out only themselves, and need many addresses
+ *   to reach the owner.
+ * - A browser that signed in before is not locked out at all (2.28): each
+ *   sign-in gives LoginResult::$knownDevice, a token the application sets in
+ *   a cookie and passes back to start(). It lets that browser through the
+ *   per-login limit, for that login only; it never replaces the password.
  * - A user with a second factor is not signed in by the password alone: the
  *   session holds a pending sign-in for 5 minutes, until a code completes it,
  *   unless the device was remembered.
@@ -74,8 +85,16 @@ final class SessionLogin
         private readonly ?EventDispatcherInterface $events = null,
         private readonly ?TwoFactor $twoFactor = null,
         private readonly ?\Closure $clock = null,
+        private readonly ?int $maxAttemptsPerLogin = null,
+        private readonly ?TokenSigner $knownDevices = null,
+        private readonly int $knownDeviceLifetime = self::KNOWN_DEVICE_LIFETIME,
     ) {
     }
+
+    /** 90 days. */
+    public const int KNOWN_DEVICE_LIFETIME = 7_776_000;
+
+    private const string KNOWN_DEVICE_PREFIX = 'known-device:';
 
     /**
      * Sign in with a password; null when it fails, or when the user must
@@ -92,17 +111,22 @@ final class SessionLogin
      * The first step: the password. Signs the user in, or asks for a second factor.
      *
      * @param string|null $deviceToken The "remember this device" cookie, which skips the second factor
+     * @param string|null $knownDevice The "known device" cookie (2.28), LoginResult::$knownDevice of an earlier
+     *        sign-in: this browser is not held by the limit on the login from every address
      *
      * @throws TooManyRequestsHttpException After too many failed attempts
      */
-    public function start(string $login, #[\SensitiveParameter] string $password, string $clientIp = '', ?string $deviceToken = null): LoginResult
+    public function start(string $login, #[\SensitiveParameter] string $password, string $clientIp = '', ?string $deviceToken = null, #[\SensitiveParameter] ?string $knownDevice = null): LoginResult
     {
         $this->session->remove(self::PENDING_KEY);
         $loginKey = 'login:' . strtolower(trim($login));
         $addressKey = $clientIp === '' ? null : 'login-ip:' . $clientIp;
+        // 2.28: five tries per login from one address lock out that address only; the login itself, from every
+        // address together, takes ten times as many, and never holds a browser that signed in to it before.
         $results = [
             $addressKey === null ? null : $this->limiter?->peek($addressKey, $this->maxAttempts, $this->window),
-            $this->limiter?->attempt($loginKey, $this->maxAttempts, $this->window),
+            $this->limiter?->attempt($addressKey === null ? $loginKey : "{$loginKey}|{$clientIp}", $this->maxAttempts, $this->window),
+            $addressKey === null || $this->isKnownDevice($login, $knownDevice) ? null : $this->limiter?->attempt($loginKey, $this->maxAttemptsPerLogin(), $this->window),
         ];
         foreach ($results as $result) {
             if ($result !== null && !$result->allowed) {
@@ -125,6 +149,9 @@ final class SessionLogin
         }
 
         $this->limiter?->reset($loginKey, $this->window);
+        if ($addressKey !== null) {
+            $this->limiter?->reset("{$loginKey}|{$clientIp}", $this->window);
+        }
         if ($this->users instanceof PasswordUpgraderInterface && $this->hasher->needsRehash($hash)) {
             $this->users->upgradePassword($user, $this->hasher->hash($password));
         }
@@ -170,7 +197,7 @@ final class SessionLogin
 
         $result = $this->signIn($user, $clientIp, 'session+two_factor');
 
-        return $remember ? new LoginResult(LoginResult::SIGNED_IN, $user, $this->twoFactor->deviceToken($user)) : $result;
+        return $remember ? new LoginResult(LoginResult::SIGNED_IN, $user, $this->twoFactor->deviceToken($user), $result->knownDevice) : $result;
     }
 
     public function logout(string $clientIp = ''): void
@@ -193,7 +220,46 @@ final class SessionLogin
         $this->context->setUser($user);
         $this->events?->dispatch(new SignInSucceeded($user->identifier(), $clientIp, $method));
 
-        return new LoginResult(LoginResult::SIGNED_IN, $user);
+        return new LoginResult(LoginResult::SIGNED_IN, $user, knownDevice: $this->knownDeviceToken($user));
+    }
+
+    private function maxAttemptsPerLogin(): int
+    {
+        return $this->maxAttemptsPerLogin ?? $this->maxAttempts * 10;
+    }
+
+    /**
+     * A token for the "known device" cookie (2.28): names the user by a hash of their identifier, so the cookie
+     * says nothing about who they are. Its subject has a colon, so it never counts as a bearer token.
+     */
+    private function knownDeviceToken(UserInterface $user): ?string
+    {
+        return $this->knownDevices?->issue(self::KNOWN_DEVICE_PREFIX . self::deviceName($user), $this->knownDeviceLifetime);
+    }
+
+    /**
+     * Whether the cookie is a known device of the user of this login. The user is looked up only when a cookie
+     * is sent, so a request without one costs what it did.
+     */
+    private function isKnownDevice(string $login, ?string $token): bool
+    {
+        if ($this->knownDevices === null || $token === null || $token === '') {
+            return false;
+        }
+        try {
+            $subject = $this->knownDevices->verify($token)->subject;
+        } catch (InvalidTokenException) {
+            return false;
+        }
+        // Another of Zana's tokens (a CSRF, reset or second-factor device token, a bearer token) has another subject.
+        $user = $this->users->findByLogin($login);
+
+        return $user !== null && hash_equals(self::KNOWN_DEVICE_PREFIX . self::deviceName($user), $subject);
+    }
+
+    private static function deviceName(UserInterface $user): string
+    {
+        return hash('sha256', 'zana.known-device|' . $user->identifier());
     }
 
     private function pendingUser(): ?UserInterface

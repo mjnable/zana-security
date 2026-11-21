@@ -19,10 +19,15 @@ final readonly class LoginResult
 
     public const string FAILED = 'failed';
 
+    /**
+     * @param string|null $knownDevice After a sign-in (2.28), a token for a "known device" cookie: sent back to
+     *        SessionLogin::start(), it lets this browser sign in to this login while others are locked out of it
+     */
     public function __construct(
         public string $status,
         public ?UserInterface $user = null,
         #[\SensitiveParameter] public ?string $deviceToken = null,
+        #[\SensitiveParameter] public ?string $knownDevice = null,
     ) {
     }
 

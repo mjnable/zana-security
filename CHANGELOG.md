@@ -3,6 +3,27 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.28.0 — Unreleased
+
+### Security
+
+- **Lockout:** anyone could lock an account for the window with five wrong passwords, and its owner got a 429 too.
+  `SessionLogin` now counts `security.login.max_attempts` per login *from one address*, so a guesser locks out
+  only their own address; the login from every address together takes `security.login.max_attempts_per_login`
+  (ten times as many by default), so guessing from many addresses is still held. Without a client address, the
+  limit is per login, as before.
+- **Known devices:** each sign-in gives `LoginResult::$knownDevice`, a signed token for a "known device" cookie
+  (`security.login.known_device_days`, 90 by default). Passed back as `start(…, knownDevice: $cookie)`, it lets
+  that browser through the limit per login, for that login only, while others are locked out of it; it never
+  replaces the password, and the limit from its own address still holds. It names the user by a hash of their
+  identifier, and no other token of Zana's counts as one. Remembering a device for the second factor keeps it.
+- **CSRF tokens tied to the session,** opt-in with `security.csrf.bind_to_session`: CSRF tokens are stateless, so one
+  visitor's token passed for another's. With it, a visitor who has a session gets tokens tied to it (`CsrfBinding`),
+  and a request that has a session is accepted only with such a token: another visitor's, or one printed before the
+  session existed, is refused. A visitor without a session keeps stateless tokens, so no session or cookie is started
+  for a form. `CsrfMiddleware` sets the session for its request, so it goes after `SessionMiddleware`, and on the pages
+  that show the forms too. Off by default: nothing changes until it is turned on.
+
 ## 2.26.0 — 2026-11-20
 
 ### Security

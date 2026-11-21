@@ -7,6 +7,11 @@ namespace Zana\Security\Tests;
 use Nyholm\Psr7\Response;
 use Nyholm\Psr7\ServerRequest;
 use PHPUnit\Framework\TestCase;
+use Zana\Cache\CacheServiceProvider;
+use Zana\Container\Contracts\ServiceCollectionInterface;
+use Zana\Core\Application;
+use Zana\Security\SecurityServiceProvider;
+use Zana\Session\SessionServiceProvider;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
@@ -186,6 +191,177 @@ final class WebsiteSecurityTest extends TestCase
     }
 
     /**
+     * 2.28: before, five wrong passwords from anywhere locked the owner out for the window too.
+     */
+    public function testAnAttackerLocksOutOnlyThemselvesNotTheOwner(): void
+    {
+        [$login] = $this->lockoutLogin();
+        foreach (range(1, 5) as $_) {
+            $this->assertNull($login->attempt('ada@example.com', 'guess', '203.0.113.9'));
+        }
+        try {
+            $login->attempt('ada@example.com', 'guess', '203.0.113.9');
+            $this->fail('The attacker\'s sixth try was let through.');
+        } catch (TooManyRequestsHttpException) {
+        }
+
+        $this->assertNotNull($login->attempt('ada@example.com', 'secret-pass', '198.51.100.1'), 'Ada, from her own address, signs in');
+    }
+
+    public function testTheOwnersSignInStartsTheirAddressAgain(): void
+    {
+        [$login] = $this->lockoutLogin();
+        foreach (range(1, 4) as $_) {
+            $login->attempt('ada@example.com', 'mistyped', '198.51.100.1');
+        }
+        $this->assertNotNull($login->attempt('ada@example.com', 'secret-pass', '198.51.100.1'));
+
+        // Her sixth try of this login from this address: it would be refused had her sign-in not started the count
+        // again (the limit per address, five failures from it, still holds, as since 2.19.1).
+        $this->assertNull($login->attempt('ada@example.com', 'mistyped again', '198.51.100.1'));
+    }
+
+    public function testManyAddressesTogetherAreHeldByTheLimitPerLogin(): void
+    {
+        [$login] = $this->lockoutLogin(perLogin: 12);
+        $tries = 0;
+        try {
+            foreach (range(1, 40) as $i) {
+                // A botnet: each address stays under its own limit of five.
+                $login->attempt('ada@example.com', 'guess', "203.0.113.{$i}");
+                $login->attempt('ada@example.com', 'guess', "203.0.113.{$i}");
+                $tries += 2;
+            }
+        } catch (TooManyRequestsHttpException) {
+        }
+        $this->assertSame(12, $tries, 'the login takes twelve tries from all addresses together');
+
+        $this->expectException(TooManyRequestsHttpException::class);
+        $login->attempt('ada@example.com', 'secret-pass', '198.51.100.1');   // and then Ada too, without a known device
+    }
+
+    public function testTheLimitPerLoginIsTenTimesThePerAddressLimitByDefault(): void
+    {
+        [$login] = $this->lockoutLogin();
+        $tries = 0;
+        try {
+            foreach (range(1, 100) as $i) {
+                $login->attempt('ada@example.com', 'guess', "203.0.113.{$i}");
+                $tries++;
+            }
+        } catch (TooManyRequestsHttpException) {
+        }
+
+        $this->assertSame(50, $tries);
+    }
+
+    public function testAKnownDeviceSignsInWhileTheLoginIsLockedOut(): void
+    {
+        [$login] = $this->lockoutLogin(perLogin: 3);
+        $first = $login->start('ada@example.com', 'secret-pass', '198.51.100.1');
+        $this->assertTrue($first->signedIn());
+        $device = $first->knownDevice;
+        $this->assertIsString($device, 'each sign-in gives a known-device token');
+
+        foreach (range(1, 3) as $i) {
+            $login->attempt('ada@example.com', 'guess', "203.0.113.{$i}");
+        }
+        try {
+            $login->start('ada@example.com', 'secret-pass', '198.51.100.1');
+            $this->fail('Locked out without the cookie.');
+        } catch (TooManyRequestsHttpException) {
+        }
+
+        $this->assertTrue($login->start('ada@example.com', 'secret-pass', '198.51.100.1', knownDevice: $device)->signedIn(), 'with it, Ada gets in');
+        $this->assertFalse($login->start('ada@example.com', 'wrong', '198.51.100.1', knownDevice: $device)->signedIn(), 'it never replaces the password');
+    }
+
+    public function testAKnownDeviceOfAnotherUserOrAnotherTokenDoesNotPass(): void
+    {
+        $hasher = new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT);
+        $signer = $this->signer();
+        $users = new TwoLoginUsers($hasher->hash('secret-pass'));
+        $login = new SessionLogin($users, $hasher, new Session(), new SecurityContext(), new RateLimiter(new ArrayCache(), fn (): int => $this->now), maxAttemptsPerLogin: 2, knownDevices: $signer);
+
+        $graces = $login->start('grace@example.com', 'secret-pass', '198.51.100.2')->knownDevice;
+        $this->assertIsString($graces);
+        $login->attempt('ada@example.com', 'guess', '203.0.113.1');
+        $login->attempt('ada@example.com', 'guess', '203.0.113.2');
+
+        foreach ([
+            'Grace\'s device' => $graces,
+            'a CSRF token' => (new CsrfTokens($signer))->issue(),
+            'a bearer token for Ada' => $signer->issue('1', 600),
+            'signed with another key' => (new TokenSigner(str_repeat('o', 32), fn (): int => $this->now))->issue('known-device:' . hash('sha256', 'zana.known-device|1'), 600),
+            'garbage' => 'garbage',
+        ] as $name => $token) {
+            try {
+                $login->start('ada@example.com', 'secret-pass', '198.51.100.1', knownDevice: $token);
+                $this->fail("Let through with {$name}.");
+            } catch (TooManyRequestsHttpException) {
+                $this->addToAssertionCount(1);
+            }
+        }
+    }
+
+    public function testAKnownDeviceExpiresAndSaysNothingAboutTheUser(): void
+    {
+        [$login] = $this->lockoutLogin(perLogin: 1);
+        $device = $login->start('ada@example.com', 'secret-pass', '198.51.100.1')->knownDevice;
+        $this->assertIsString($device);
+        $this->assertStringNotContainsString('ada', strtolower((string) base64_decode(strtr(explode('.', $device)[0], '-_', '+/'))));
+        $this->assertMatchesRegularExpression('/^known-device:[0-9a-f]{64}$/', $this->signer()->verify($device)->subject, 'a hash, never the identifier');
+
+        $login->attempt('ada@example.com', 'guess', '203.0.113.1');
+        $this->now += SessionLogin::KNOWN_DEVICE_LIFETIME + 1;
+        // The window has passed too, so lock the login again first.
+        $login->attempt('ada@example.com', 'guess', '203.0.113.1');
+
+        $this->expectException(TooManyRequestsHttpException::class);
+        $login->start('ada@example.com', 'secret-pass', '198.51.100.1', knownDevice: $device);
+    }
+
+    public function testTheProviderWiresTheLimitAndTheKnownDevice(): void
+    {
+        $app = Application::configure(sys_get_temp_dir())
+            ->withProviders(SecurityServiceProvider::class, SessionServiceProvider::class, CacheServiceProvider::class)
+            ->withConfiguration(['security.secret' => str_repeat('s', 40), 'security.login.max_attempts_per_login' => 7, 'security.login.known_device_days' => 1, 'cache.default' => 'array'])
+            ->withServices(static function (ServiceCollectionInterface $services): void {
+                $services->singleton(PasswordUserProviderInterface::class, static fn (): LoginUsers => new LoginUsers((new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT))->hash('secret-pass')));
+            })
+            ->build();
+        $scope = $app->container()->createScope();
+        $scope->get(SessionContext::class)->set(new Session());
+        $login = $scope->get(SessionLogin::class);
+        $this->assertInstanceOf(SessionLogin::class, $login);
+
+        $device = $login->start('ada@example.com', 'secret-pass', '198.51.100.1')->knownDevice;
+        $this->assertIsString($device);
+        $claims = $app->container()->get(TokenSigner::class)->verify($device);
+        $this->assertSame(86_400, $claims->expiresAt->getTimestamp() - $claims->issuedAt->getTimestamp(), 'known_device_days');
+
+        $tries = 0;
+        try {
+            foreach (range(1, 20) as $i) {
+                $login->attempt('ada@example.com', 'guess', "203.0.113.{$i}");
+                $tries++;
+            }
+        } catch (TooManyRequestsHttpException) {
+        }
+        $this->assertSame(7, $tries, 'max_attempts_per_login');
+    }
+
+    /**
+     * @return array{SessionLogin}
+     */
+    private function lockoutLogin(?int $perLogin = null): array
+    {
+        $hasher = new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT);
+
+        return [new SessionLogin(new LoginUsers($hasher->hash('secret-pass')), $hasher, new Session(), new SecurityContext(), new RateLimiter(new ArrayCache(), fn (): int => $this->now), maxAttemptsPerLogin: $perLogin, knownDevices: $this->signer())];
+    }
+
+    /**
      * @param array<string, mixed> $data
      */
     private function sessionUser(LoginUsers $users, array $data): ?string
@@ -299,6 +475,50 @@ final readonly class PassThrough implements RequestHandlerInterface
     public function handle(ServerRequestInterface $request): ResponseInterface
     {
         return new Response();
+    }
+}
+
+/** Ada (1) and Grace (2), with one password. */
+final readonly class TwoLoginUsers implements PasswordUserProviderInterface
+{
+    public function __construct(private string $hash)
+    {
+    }
+
+    public function findByIdentifier(string $identifier): ?UserInterface
+    {
+        return in_array($identifier, ['1', '2'], true) ? new NumberedUser($identifier) : null;
+    }
+
+    public function findByLogin(string $login): ?UserInterface
+    {
+        return match (strtolower(trim($login))) {
+            'ada@example.com' => new NumberedUser('1'),
+            'grace@example.com' => new NumberedUser('2'),
+            default => null,
+        };
+    }
+
+    public function passwordHashFor(UserInterface $user): string
+    {
+        return $this->hash;
+    }
+}
+
+final readonly class NumberedUser implements UserInterface
+{
+    public function __construct(private string $id)
+    {
+    }
+
+    public function identifier(): string
+    {
+        return $this->id;
+    }
+
+    public function roles(): array
+    {
+        return [];
     }
 }
 
