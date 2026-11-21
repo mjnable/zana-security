@@ -3,7 +3,7 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
-## 2.36.0 — Unreleased
+## 2.36.0 — 2026-11-21
 
 ### Security
 
