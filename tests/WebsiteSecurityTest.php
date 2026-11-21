@@ -28,6 +28,8 @@ use Zana\Security\PasswordUserProviderInterface;
 use Zana\Security\RateLimit\RateLimiter;
 use Zana\Security\SecurityContext;
 use Zana\Security\Session\SessionAuthenticationMiddleware;
+use Zana\Security\Session\KnownDevice;
+use Zana\Security\Session\KnownDeviceMiddleware;
 use Zana\Security\Session\SessionLogin;
 use Zana\Security\TokenSigner;
 use Zana\Security\UserInterface;
@@ -351,6 +353,85 @@ final class WebsiteSecurityTest extends TestCase
         $this->assertSame(7, $tries, 'max_attempts_per_login');
     }
 
+    // ── 2.31: the known-device cookie, by middleware ───────────────────────
+
+    public function testTheMiddlewareSetsTheCookieAndTheOwnerGetsInWhileLockedOut(): void
+    {
+        $device = new KnownDevice();
+        $hasher = new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT);
+        $login = new SessionLogin(new LoginUsers($hasher->hash('secret-pass')), $hasher, new Session(), new SecurityContext(), new RateLimiter(new ArrayCache(), fn (): int => $this->now), maxAttemptsPerLogin: 3, knownDevices: $this->signer(), device: $device);
+        $middleware = new KnownDeviceMiddleware($device, lifetime: 600);
+        // The application's own controller: it calls attempt() as before 2.28, and knows nothing of the cookie.
+        $controller = new SignsIn($login);
+
+        $signedIn = $middleware->process(new ServerRequest('POST', 'https://example.com/login'), $controller->as('ada@example.com', 'secret-pass', '198.51.100.1'));
+        $cookie = $signedIn->getHeaderLine('Set-Cookie');
+        $this->assertMatchesRegularExpression('/^zana_device=[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-.]+; Path=\/; Max-Age=600; HttpOnly; SameSite=Lax; Secure$/', $cookie);
+        $token = substr((string) strstr($cookie, ';', true), strlen('zana_device='));
+
+        foreach (range(1, 3) as $i) {   // Mallory, from three addresses
+            $middleware->process(new ServerRequest('POST', '/login'), $controller->as('ada@example.com', 'guess', "203.0.113.{$i}"));
+        }
+        try {
+            $middleware->process(new ServerRequest('POST', '/login'), $controller->as('ada@example.com', 'secret-pass', '198.51.100.1'));
+            $this->fail('Locked out without the cookie.');
+        } catch (TooManyRequestsHttpException) {
+        }
+
+        $again = $middleware->process((new ServerRequest('POST', '/login'))->withCookieParams(['zana_device' => $token]), $controller->as('ada@example.com', 'secret-pass', '198.51.100.1'));
+        $this->assertSame(200, $again->getStatusCode(), 'Ada, with her cookie, gets in');
+        $this->assertStringNotContainsString('Secure', $again->getHeaderLine('Set-Cookie'), 'plain HTTP: no Secure');
+    }
+
+    public function testAFailedSignInSetsNoCookieAndHostileCookiesAreNotRead(): void
+    {
+        $device = new KnownDevice();
+        $hasher = new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT);
+        $login = new SessionLogin(new LoginUsers($hasher->hash('secret-pass')), $hasher, new Session(), new SecurityContext(), new RateLimiter(new ArrayCache(), fn (): int => $this->now), maxAttemptsPerLogin: 1, knownDevices: $this->signer(), device: $device);
+        $middleware = new KnownDeviceMiddleware($device, cookie: 'device');
+        $controller = new SignsIn($login);
+
+        $failed = $middleware->process(new ServerRequest('POST', '/login'), $controller->as('ada@example.com', 'wrong', '203.0.113.1'));
+        $this->assertSame('', $failed->getHeaderLine('Set-Cookie'), 'no sign-in, no cookie');
+
+        foreach ([['device' => ['an', 'array']], ['device' => str_repeat('a', 600) . '.' . str_repeat('b', 600)], ['device' => "x.y\r\nSet-Cookie: evil=1"], ['device' => '']] as $cookies) {
+            $middleware->process((new ServerRequest('POST', '/login'))->withCookieParams($cookies), new PassThrough());
+            $this->assertNull($device->presented(), 'not given to SessionLogin: ' . json_encode($cookies));
+        }
+        $this->expectException(TooManyRequestsHttpException::class);   // and so the lock holds
+        $middleware->process((new ServerRequest('POST', '/login'))->withCookieParams(['device' => 'not.a-token']), $controller->as('ada@example.com', 'secret-pass', '198.51.100.1'));
+    }
+
+    public function testTheCookieFollowsTheBasePath(): void
+    {
+        $device = new KnownDevice();
+        $device->issue('a.b');
+        $response = (new KnownDeviceMiddleware($device))->process((new ServerRequest('POST', '/shop/login'))->withAttribute(\Zana\Http\BasePath::ATTRIBUTE, '/shop'), new PassThrough());
+
+        $this->assertStringContainsString('; Path=/shop;', $response->getHeaderLine('Set-Cookie'));
+    }
+
+    public function testTheProviderWiresTheCookieMiddleware(): void
+    {
+        $app = Application::configure(sys_get_temp_dir())
+            ->withProviders(SecurityServiceProvider::class, SessionServiceProvider::class, CacheServiceProvider::class)
+            ->withConfiguration(['security.secret' => str_repeat('s', 40), 'security.login.known_device_cookie' => 'mine', 'cache.default' => 'array'])
+            ->withServices(static function (ServiceCollectionInterface $services): void {
+                $services->singleton(PasswordUserProviderInterface::class, static fn (): LoginUsers => new LoginUsers((new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT))->hash('secret-pass')));
+            })
+            ->build();
+        $scope = $app->container()->createScope();
+        $scope->get(SessionContext::class)->set(new Session());
+        $login = $scope->get(SessionLogin::class);
+        $middleware = $scope->get(KnownDeviceMiddleware::class);
+        $this->assertInstanceOf(SessionLogin::class, $login);
+        $this->assertInstanceOf(KnownDeviceMiddleware::class, $middleware);
+
+        $response = $middleware->process(new ServerRequest('POST', '/login'), (new SignsIn($login))->as('ada@example.com', 'secret-pass', '198.51.100.1'));
+        $this->assertStringStartsWith('mine=', $response->getHeaderLine('Set-Cookie'), 'the same KnownDevice in the scope');
+        $this->assertStringContainsString('Max-Age=7776000', $response->getHeaderLine('Set-Cookie'));
+    }
+
     /**
      * @return array{SessionLogin}
      */
@@ -467,6 +548,30 @@ final class LimitedController
     public function free(): string
     {
         return 'free';
+    }
+}
+
+/** An application's sign-in controller, as MMC's is: attempt(), and nothing about cookies. */
+final readonly class SignsIn
+{
+    public function __construct(private SessionLogin $login)
+    {
+    }
+
+    public function as(string $email, string $password, string $ip): RequestHandlerInterface
+    {
+        $login = $this->login;
+
+        return new class ($login, $email, $password, $ip) implements RequestHandlerInterface {
+            public function __construct(private SessionLogin $login, private string $email, private string $password, private string $ip)
+            {
+            }
+
+            public function handle(ServerRequestInterface $request): ResponseInterface
+            {
+                return new Response($this->login->attempt($this->email, $this->password, $this->ip) === null ? 422 : 200);
+            }
+        };
     }
 }
 

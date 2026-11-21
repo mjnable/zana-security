@@ -88,6 +88,7 @@ final class SessionLogin
         private readonly ?int $maxAttemptsPerLogin = null,
         private readonly ?TokenSigner $knownDevices = null,
         private readonly int $knownDeviceLifetime = self::KNOWN_DEVICE_LIFETIME,
+        private readonly ?KnownDevice $device = null,
     ) {
     }
 
@@ -112,12 +113,14 @@ final class SessionLogin
      *
      * @param string|null $deviceToken The "remember this device" cookie, which skips the second factor
      * @param string|null $knownDevice The "known device" cookie (2.28), LoginResult::$knownDevice of an earlier
-     *        sign-in: this browser is not held by the limit on the login from every address
+     *        sign-in: this browser is not held by the limit on the login from every address. Since 2.31,
+     *        KnownDeviceMiddleware gives it when none is passed here
      *
      * @throws TooManyRequestsHttpException After too many failed attempts
      */
     public function start(string $login, #[\SensitiveParameter] string $password, string $clientIp = '', ?string $deviceToken = null, #[\SensitiveParameter] ?string $knownDevice = null): LoginResult
     {
+        $knownDevice ??= $this->device?->presented();
         $this->session->remove(self::PENDING_KEY);
         $loginKey = 'login:' . strtolower(trim($login));
         $addressKey = $clientIp === '' ? null : 'login-ip:' . $clientIp;
@@ -220,7 +223,12 @@ final class SessionLogin
         $this->context->setUser($user);
         $this->events?->dispatch(new SignInSucceeded($user->identifier(), $clientIp, $method));
 
-        return new LoginResult(LoginResult::SIGNED_IN, $user, knownDevice: $this->knownDeviceToken($user));
+        $known = $this->knownDeviceToken($user);
+        if ($known !== null) {
+            $this->device?->issue($known);   // 2.31: KnownDeviceMiddleware sets it as the cookie
+        }
+
+        return new LoginResult(LoginResult::SIGNED_IN, $user, knownDevice: $known);
     }
 
     private function maxAttemptsPerLogin(): int

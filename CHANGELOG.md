@@ -3,6 +3,18 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.31.0 — Unreleased
+
+### Added
+
+- `KnownDeviceMiddleware` and `KnownDevice`: the "known device" cookie of 2.28 without code in the application. On the
+  sign-in routes, before `SessionMiddleware`, it gives `SessionLogin` the cookie the browser sent (used when `start()`
+  is not given one, so `attempt()` gets it too), and sets the token of a new sign-in as the cookie: `zana_device`
+  (`security.login.known_device_cookie`), HttpOnly, SameSite=Lax, Secure on HTTPS, for
+  `security.login.known_device_days`, on the base path. Only a value shaped like a signed token, of at most 1 KB,
+  reaches the signer. On MMC, with only the middleware added: after 50 guesses from ten addresses, its owner was locked
+  out without the cookie (429) and signed in with it (303).
+
 ## 2.29.0 — 2026-11-21
 
 ### Security

@@ -33,6 +33,8 @@ use Zana\Security\Middleware\AuthorizationMiddleware;
 use Zana\Security\Middleware\CsrfMiddleware;
 use Zana\Security\Middleware\RateLimitMiddleware;
 use Zana\Security\RateLimit\RateLimiter;
+use Zana\Security\Session\KnownDevice;
+use Zana\Security\Session\KnownDeviceMiddleware;
 use Zana\Security\Session\SessionAuthenticationMiddleware;
 use Zana\Security\RoleAssignment\DatabaseRoleAssignmentStore;
 use Zana\Security\RoleAssignment\RoleAssignments;
@@ -314,8 +316,22 @@ final class SecurityServiceProvider extends ServiceProvider
                         maxAttemptsPerLogin: $config->has('security.login.max_attempts_per_login') ? $config->int('security.login.max_attempts_per_login') : null,
                         knownDevices: $signer,
                         knownDeviceLifetime: $config->int('security.login.known_device_days', 90) * 86_400,
+                        device: $r->get(KnownDevice::class),
                     );
-                })->uses(ConfigurationInterface::class, PasswordUserProviderInterface::class, PasswordHasher::class, SessionInterface::class, SecurityContext::class, RateLimiter::class, EventDispatcherInterface::class, TwoFactor::class, TokenSigner::class)
+                })->uses(ConfigurationInterface::class, PasswordUserProviderInterface::class, PasswordHasher::class, SessionInterface::class, SecurityContext::class, RateLimiter::class, EventDispatcherInterface::class, TwoFactor::class, TokenSigner::class, KnownDevice::class)
+                // 2.31: the "known device" cookie, read and set around the sign-in routes.
+                ->scoped(KnownDevice::class)
+                ->scoped(KnownDeviceMiddleware::class, static function (ServiceResolverInterface $r): KnownDeviceMiddleware {
+                    $config = $r->get(ConfigurationInterface::class);
+                    $device = $r->get(KnownDevice::class);
+                    assert($device instanceof KnownDevice);
+
+                    return new KnownDeviceMiddleware(
+                        $device,
+                        $config->string('security.login.known_device_cookie', KnownDeviceMiddleware::DEFAULT_COOKIE),
+                        $config->int('security.login.known_device_days', 90) * 86_400,
+                    );
+                })->uses(ConfigurationInterface::class, KnownDevice::class)
                 ->scoped(SessionAuthenticationMiddleware::class, static function (ServiceResolverInterface $r): SessionAuthenticationMiddleware {
                     $config = $r->get(ConfigurationInterface::class);
                     $sessions = $r->get(SessionContext::class);
