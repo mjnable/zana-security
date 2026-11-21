@@ -30,7 +30,7 @@ final class TwoFactorApplicationTest extends TestCase
     public function testTheKeyIsCheckedWhenTheUserProviderHoldsSecondFactors(): void
     {
         $app = $this->app([]);
-        $this->assertSame(['security.two_factor_key'], $this->findings($app));
+        $this->assertSame(['security.two_factor_key', 'security.two_factor_swap'], $this->findings($app));
 
         $scope = $app->container()->createScope();
         try {
@@ -47,10 +47,11 @@ final class TwoFactorApplicationTest extends TestCase
             $scope->dispose();
         }
 
-        $this->assertSame(['security.two_factor_key'], $this->findings($this->app(['security.two_factor.key' => 'too-short'])));
+        $this->assertSame(['security.two_factor_key', 'security.two_factor_swap'], $this->findings($this->app(['security.two_factor.key' => 'too-short'])));
 
         $ready = $this->app(['security.two_factor.key' => str_repeat('k', 64), 'app.name' => 'Billets RDC']);
-        $this->assertSame([], $this->findings($ready));
+        $this->assertSame(['security.two_factor_swap'], $this->findings($ready), 'TwoFactorUsers has no swap: the S14 race');
+        $this->assertSame([], $this->findings($this->app(['security.two_factor.key' => str_repeat('k', 64)], swapping: true)));
         $scope = $ready->container()->createScope();
         $twoFactor = $scope->get(TwoFactor::class);
         assert($twoFactor instanceof TwoFactor);
@@ -77,9 +78,10 @@ final class TwoFactorApplicationTest extends TestCase
     /**
      * @param array<string, mixed> $config
      */
-    private function app(array $config): ApplicationInterface
+    private function app(array $config, bool $swapping = false): ApplicationInterface
     {
         $users = new TwoFactorUsers((new PasswordHasher(['cost' => 4], PASSWORD_BCRYPT))->hash('secret-pass'));
+        $users = $swapping ? new SwappingPasswordUsers($users) : $users;
 
         return Application::configure(sys_get_temp_dir() . '/zana-security-2fa')->withEnvironment('testing')
             ->withConfiguration(['security.secret' => str_repeat('s', 32), ...$config])
@@ -101,5 +103,50 @@ final class TwoFactorApplicationTest extends TestCase
             }
         }
         self::fail('TwoFactorCheck is not tagged.');
+    }
+}
+
+/**
+ * TwoFactorUsers with the compare-and-swap of S14.
+ */
+final readonly class SwappingPasswordUsers implements PasswordUserProviderInterface, \Zana\Security\TwoFactorStateSwapInterface
+{
+    public function __construct(private TwoFactorUsers $users)
+    {
+    }
+
+    public function findByIdentifier(string $identifier): ?\Zana\Security\UserInterface
+    {
+        return $this->users->findByIdentifier($identifier);
+    }
+
+    public function findByLogin(string $login): ?\Zana\Security\UserInterface
+    {
+        return $this->users->findByLogin($login);
+    }
+
+    public function passwordHashFor(\Zana\Security\UserInterface $user): string
+    {
+        return $this->users->passwordHashFor($user);
+    }
+
+    public function twoFactorStateFor(\Zana\Security\UserInterface $user): ?string
+    {
+        return $this->users->twoFactorStateFor($user);
+    }
+
+    public function saveTwoFactorState(\Zana\Security\UserInterface $user, ?string $state): void
+    {
+        $this->users->saveTwoFactorState($user, $state);
+    }
+
+    public function swapTwoFactorState(\Zana\Security\UserInterface $user, ?string $expected, ?string $new): bool
+    {
+        if ($this->users->twoFactorStateFor($user) !== $expected) {
+            return false;
+        }
+        $this->users->saveTwoFactorState($user, $new);
+
+        return true;
     }
 }

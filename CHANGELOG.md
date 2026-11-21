@@ -3,6 +3,14 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.36.0 — Unreleased
+
+### Security
+
+- `check` warns (`security.two_factor_swap`) when the user provider holds second factors without
+  `TwoFactorStateSwapInterface`: two sign-ins at the same moment can then give a used recovery code back, and count
+  a TOTP code twice (S14, a documented limit since 2.20).
+
 ## 2.31.0 — 2026-11-21
 
 ### Added
